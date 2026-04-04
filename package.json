@@ -4,8 +4,7 @@
   "description": "TPG WhatsApp CRM",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "install": "npm install"
+    "start": "node index.js"
   },
   "dependencies": {
     "express": "latest",
