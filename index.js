@@ -1,31 +1,78 @@
 const express = require('express');
+const axios = require('axios'); // ספריה שמאפשרת לנו להוציא בקשות לשרתים אחרים (כמו גרין API)
 const app = express();
 
-// הגדרה שמאפשרת לשרת לקרוא את הנתונים שמגיעים מוואטסאפ
 app.use(express.json());
-
 const PORT = process.env.PORT || 8000;
 
-// נתיב בדיקה לראות שהשרת חי (כשנכנסים לכתובת בדפדפן)
+// המשתנים האלה יימשכו אוטומטית מ-Koyeb כשנחבר הכל
+const INSTANCE_ID = process.env.INSTANCE_ID;
+const API_TOKEN = process.env.API_TOKEN;
+
+// פונקציה חכמה ששולחת הודעות וואטסאפ דרך Green API
+async function sendWhatsAppMessage(chatId, messageText) {
+    // שים לב ששמתי פה את השרת הספציפי שלך (7107) כדי שזה יעבוד מושלם
+    const url = `https://7107.api.greenapi.com/waInstance${INSTANCE_ID}/sendMessage/${API_TOKEN}`;
+    
+    try {
+        await axios.post(url, {
+            chatId: chatId,
+            message: messageText
+        });
+        console.log(`✅ הודעה נשלחה בהצלחה ל: ${chatId}`);
+    } catch (error) {
+        console.error('❌ שגיאה בשליחת הודעה:', error.message);
+    }
+}
+
+// נתיב בדיקה לדפדפן
 app.get('/', (req, res) => {
     res.send('🚀 TPG Server is Running Perfectly!');
 });
 
-// נתיב ה-Webhook - לכאן Green API ישלח את ההודעות הנכנסות
-app.post('/webhook', (req, res) => {
+// המוח של הבוט - מקבל הודעות, מנתח אותן, ומגיב
+app.post('/webhook', async (req, res) => {
+    // מיד מחזירים תשובה כדי שגרין API לא יחשוב שהשרת שלנו תקוע
+    res.status(200).send('OK');
+    
     const data = req.body;
     
-    // מדפיס לקונסול את ההודעה כדי שנוכל לראות אותה בשרת
-    console.log('✅ התקבלה פניה חדשה מלקוח:', JSON.stringify(data, null, 2));
+    // מוודאים שזו באמת הודעת טקסט נכנסת מלקוח
+    if (data && data.typeWebhook === 'incomingMessageReceived') {
+        const messageData = data.messageData;
+        const senderData = data.senderData;
+        
+        if (messageData && messageData.typeMessage === 'textMessage') {
+            const incomingText = messageData.textMessageData.textMessage.trim();
+            const chatId = senderData.chatId;
 
-    // כאן נוסיף בהמשך את כל הלוגיקה של הבוט:
-    // זיהוי לחיצה על "עלינו", ניתוב לנציג, ושמירה במסד נתונים
+            console.log(`📩 הודעה חדשה מ-${chatId}: ${incomingText}`);
 
-    // השרת חייב להחזיר תשובת OK לגרין API כדי שלא ישלחו שוב ושוב
-    res.status(200).send('OK');
+            // === לוגיקת התפריט של TPG ===
+            
+            if (incomingText === 'שלום' || incomingText === 'היי') {
+                const menu = "ברוכים הבאים ל-TPG! 👋\n\nאנא בחר אפשרות:\n1️⃣ קצת עלינו\n2️⃣ מעבר לנציג אנושי";
+                await sendWhatsAppMessage(chatId, menu);
+            } 
+            else if (incomingText === '1') {
+                const aboutText = "אנחנו TPG, מערכת ה-CRM והשירות המובילה בישראל! 🚀\nאנחנו כאן כדי לתת לך את הפתרונות המהירים והטובים ביותר.";
+                await sendWhatsAppMessage(chatId, aboutText);
+            }
+            else if (incomingText === '2') {
+                const agentText = "הפניה שלך התקבלה בהצלחה! ⏳\nנציג אנושי שלנו יעבור על הפניה ויענה לך בהקדם האפשרי.";
+                await sendWhatsAppMessage(chatId, agentText);
+                
+                // כאן תבוא הלוגיקה ששולחת את השיחה למנהל/נציג פנוי
+            }
+            else {
+                // תשובת ברירת מחדל אם הלקוח שלח משהו לא ברור
+                await sendWhatsAppMessage(chatId, "לא כל כך הבנתי... 😅\nאנא שלח 'שלום' כדי לראות את התפריט הראשי.");
+            }
+        }
+    }
 });
 
-// הפעלת השרת
+// הדלקת השרת
 app.listen(PORT, () => {
     console.log(`TPG Bot Server is listening on port ${PORT}`);
 });
