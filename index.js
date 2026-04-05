@@ -10,8 +10,8 @@ const MONGODB_URI = process.env.MONGODB_URI;
 
 // חיבור למסד הנתונים
 mongoose.connect(MONGODB_URI)
-    .then(() => console.log('✅ מחובר למסד הנתונים'))
-    .catch(err => console.error('❌ שגיאת חיבור:', err));
+    .then(() => console.log('✅ מחובר למסד הנתונים של TPG'))
+    .catch(err => console.error('❌ שגיאת חיבור ל-DB:', err));
 
 const Client = mongoose.model('Client', {
     chatId: String,
@@ -20,8 +20,9 @@ const Client = mongoose.model('Client', {
 });
 
 async function sendMenu(chatId) {
-    // שים לב: שיניתי פה ל-7107 שיתאים בדיוק ל-Instance שלך!
-    const url = `https://7107.api.greenapi.com/waInstance${INSTANCE_ID}/sendTemplateMessage/${API_TOKEN}`;
+    // התיקון כאן: הוספתי את המקף ב-green-api.com והשתמשתי בכתובת הכללית
+    const url = `https://api.green-api.com/waInstance${INSTANCE_ID}/sendTemplateMessage/${API_TOKEN}`;
+    
     const data = {
         chatId: chatId,
         templateMessage: {
@@ -32,7 +33,13 @@ async function sendMenu(chatId) {
             ]
         }
     };
-    try { await axios.post(url, data); } catch (e) { console.error("Error:", e.response?.data || e.message); }
+
+    try { 
+        await axios.post(url, data); 
+        console.log(`✅ תפריט נשלח ל-${chatId}`);
+    } catch (e) { 
+        console.error("❌ שגיאה בשליחת הודעה:", e.response?.data || e.message); 
+    }
 }
 
 app.post('/webhook', async (req, res) => {
@@ -41,14 +48,19 @@ app.post('/webhook', async (req, res) => {
             const chatId = req.body.senderData.chatId;
             const senderName = req.body.senderData.senderName;
             
+            // שומר את הלקוח בזיכרון
             await Client.findOneAndUpdate({ chatId }, { name: senderName }, { upsert: true });
+            
+            // שולח את התפריט
             await sendMenu(chatId);
         }
-    } catch (e) { console.error("Webhook Error:", e.message); }
+    } catch (e) { 
+        console.error("❌ שגיאה ב-Webhook:", e.message); 
+    }
     res.sendStatus(200);
 });
 
-app.get('/', (req, res) => res.send("System is Online!"));
+app.get('/', (req, res) => res.send("🚀 TPG System is Online and Healthy!"));
 
 const PORT = process.env.PORT || 8000;
-app.listen(PORT, () => console.log(`Running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Server is running on port ${PORT}`));
