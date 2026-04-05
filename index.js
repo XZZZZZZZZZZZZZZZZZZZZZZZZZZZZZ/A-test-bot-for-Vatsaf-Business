@@ -1,78 +1,61 @@
 const express = require('express');
-const axios = require('axios'); // ספריה שמאפשרת לנו להוציא בקשות לשרתים אחרים (כמו גרין API)
+const axios = require('axios');
 const app = express();
-
 app.use(express.json());
-const PORT = process.env.PORT || 8000;
 
-// המשתנים האלה יימשכו אוטומטית מ-Koyeb כשנחבר הכל
 const INSTANCE_ID = process.env.INSTANCE_ID;
 const API_TOKEN = process.env.API_TOKEN;
 
-// פונקציה חכמה ששולחת הודעות וואטסאפ דרך Green API
-async function sendWhatsAppMessage(chatId, messageText) {
-    // שים לב ששמתי פה את השרת הספציפי שלך (7107) כדי שזה יעבוד מושלם
-    const url = `https://7107.api.greenapi.com/waInstance${INSTANCE_ID}/sendMessage/${API_TOKEN}`;
-    
+// פונקציה לשליחת כפתורים
+async function sendButtons(chatId, text, buttons) {
+    const url = `https://7103.api.greenapi.com/waInstance${INSTANCE_ID}/sendTemplateMessage/${API_TOKEN}`;
+    const formattedButtons = buttons.map((btn, index) => ({
+        index: index + 1,
+        quickReplyButton: { displayText: btn.text, id: btn.id }
+    }));
+
     try {
         await axios.post(url, {
             chatId: chatId,
-            message: messageText
+            templateMessage: {
+                content: { text: text },
+                buttons: formattedButtons
+            }
         });
-        console.log(`✅ הודעה נשלחה בהצלחה ל: ${chatId}`);
-    } catch (error) {
-        console.error('❌ שגיאה בשליחת הודעה:', error.message);
-    }
+    } catch (e) { console.error("Error sending buttons", e); }
 }
 
-// נתיב בדיקה לדפדפן
-app.get('/', (req, res) => {
-    res.send('🚀 TPG Server is Running Perfectly!');
-});
-
-// המוח של הבוט - מקבל הודעות, מנתח אותן, ומגיב
 app.post('/webhook', async (req, res) => {
-    // מיד מחזירים תשובה כדי שגרין API לא יחשוב שהשרת שלנו תקוע
-    res.status(200).send('OK');
-    
-    const data = req.body;
-    
-    // מוודאים שזו באמת הודעת טקסט נכנסת מלקוח
-    if (data && data.typeWebhook === 'incomingMessageReceived') {
-        const messageData = data.messageData;
-        const senderData = data.senderData;
-        
-        if (messageData && messageData.typeMessage === 'textMessage') {
-            const incomingText = messageData.textMessageData.textMessage.trim();
-            const chatId = senderData.chatId;
+    const body = req.body;
+    if (body.typeWebhook === 'incomingMessageReceived') {
+        const chatId = body.senderData.chatId;
+        const text = body.messageData.textMessageData?.textMessage || "";
 
-            console.log(`📩 הודעה חדשה מ-${chatId}: ${incomingText}`);
-
-            // === לוגיקת התפריט של TPG ===
-            
-            if (incomingText === 'שלום' || incomingText === 'היי') {
-                const menu = "ברוכים הבאים ל-TPG! 👋\n\nאנא בחר אפשרות:\n1️⃣ קצת עלינו\n2️⃣ מעבר לנציג אנושי";
-                await sendWhatsAppMessage(chatId, menu);
-            } 
-            else if (incomingText === '1') {
-                const aboutText = "אנחנו TPG, מערכת ה-CRM והשירות המובילה בישראל! 🚀\nאנחנו כאן כדי לתת לך את הפתרונות המהירים והטובים ביותר.";
-                await sendWhatsAppMessage(chatId, aboutText);
-            }
-            else if (incomingText === '2') {
-                const agentText = "הפניה שלך התקבלה בהצלחה! ⏳\nנציג אנושי שלנו יעבור על הפניה ויענה לך בהקדם האפשרי.";
-                await sendWhatsAppMessage(chatId, agentText);
-                
-                // כאן תבוא הלוגיקה ששולחת את השיחה למנהל/נציג פנוי
-            }
-            else {
-                // תשובת ברירת מחדל אם הלקוח שלח משהו לא ברור
-                await sendWhatsAppMessage(chatId, "לא כל כך הבנתי... 😅\nאנא שלח 'שלום' כדי לראות את התפריט הראשי.");
-            }
+        // לוגיקה: אם הלקוח לחץ על כפתור או שלח מילה
+        if (text === 'קצת עלינו') {
+            await axios.post(`https://7103.api.greenapi.com/waInstance${INSTANCE_ID}/sendMessage/${API_TOKEN}`, {
+                chatId: chatId,
+                message: "TPG היא החברה המובילה לפתרונות אוטומציה לעסקים! 🚀"
+            });
+        } 
+        else if (text === 'נציג אנושי') {
+            await axios.post(`https://7103.api.greenapi.com/waInstance${INSTANCE_ID}/sendMessage/${API_TOKEN}`, {
+                chatId: chatId,
+                message: "מעביר אותך לנציג, מיד נחזור אליך... 👨‍💻"
+            });
+        }
+        // ברירת מחדל: תמיד שולח תפריט כפתורים
+        else {
+            await sendButtons(chatId, "ברוכים הבאים ל-TPG! 👋\nאיך נוכל לעזור?", [
+                { text: "קצת עלינו", id: "btn1" },
+                { text: "נציג אנושי", id: "btn2" }
+            ]);
         }
     }
+    res.sendStatus(200);
 });
 
-// הדלקת השרת
-app.listen(PORT, () => {
-    console.log(`TPG Bot Server is listening on port ${PORT}`);
-});
+app.get('/', (req, res) => res.send("🚀 TPG Server is Running Perfectly!"));
+
+const PORT = process.env.PORT || 8000;
+app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
