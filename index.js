@@ -5,7 +5,7 @@ const mongoose = require('mongoose');
 const session = require('express-session');
 const app = express();
 
-// הגדרות שרת בסיסיות
+// הגדרות בסיסיות של השרת
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(session({ 
@@ -14,7 +14,7 @@ app.use(session({
     saveUninitialized: true 
 }));
 
-// משתני סביבה מה-Koyeb
+// משיכת משתני סביבה מ-Koyeb
 const { INSTANCE_ID, API_TOKEN, MONGODB_URI } = process.env;
 const GREEN_API_HOST = 'https://api.green-api.com'; 
 
@@ -55,7 +55,7 @@ async function createAdmin() {
 async function sendWAButtons(chatId, text, buttons) {
     if (!INSTANCE_ID || !API_TOKEN) return console.log("⚠️ חסרים נתוני התחברות");
     
-    // שימוש בנתיב היציב ביותר למניעת שגיאות 404
+    // שימוש בנתיב sendButtons שהוא הכי יציב למניעת 404
     const url = `${GREEN_API_HOST}/waInstance${INSTANCE_ID}/sendButtons/${API_TOKEN}`;
     const data = {
         chatId: chatId,
@@ -87,7 +87,7 @@ app.post('/webhook', async (req, res) => {
 
     const chatId = body.senderData.chatId;
     
-    // חילוץ טקסט מכל סוגי ההודעות
+    // שליפת טקסט מכל סוגי ההודעות האפשריים
     const text = body.messageData?.textMessageData?.textMessage || 
                  body.messageData?.extendedTextMessageData?.text ||
                  body.messageData?.interactiveMessageData?.buttonsMessageData?.title ||
@@ -99,7 +99,7 @@ app.post('/webhook', async (req, res) => {
 
     let client = await Client.findOne({ chatId }) || new Client({ chatId });
 
-    // לוגיקת הבוט
+    // לוגיקת הבוט (זרימה)
     if (client.status === 'START' || text === "חזור") {
         await sendWAButtons(chatId, "ברוכים הבאים ל-TPG פיתוח אוטימציות ובוטים", ["מעבר", "שיחה עם נציג"]);
         client.status = 'MENU';
@@ -144,7 +144,7 @@ app.get('/dashboard', (req, res) => {
             </style>
         </head>
         <body>
-            <div class="card bg-white text-center shadow-lg">
+            <div class="card bg-white text-center">
                 <h2 class="text-primary fw-bold mb-4">TPG CRM</h2>
                 <form action="/login" method="post">
                     <input type="text" name="u" class="form-control mb-3" placeholder="שם משתמש" required>
@@ -172,7 +172,7 @@ app.get('/admin', async (req, res) => {
     const clients = await Client.find({ status: 'WAITING' });
     
     let rows = clients.map(c => `
-        <tr class="align-middle text-center">
+        <tr class="align-middle">
             <td dir="ltr" class="fw-bold text-secondary">${c.chatId.split('@')[0]}</td>
             <td>${c.name || '---'}</td>
             <td>${c.issue || '---'}</td>
@@ -192,14 +192,14 @@ app.get('/admin', async (req, res) => {
                     <h2 class="m-0 fw-bold">ניהול פניות נכנסות</h2>
                     <a href="/logout" class="btn btn-outline-danger btn-sm">התנתק</a>
                 </div>
-                <table class="table table-hover border">
-                    <thead class="table-light text-center"><tr><th>מספר טלפון</th><th>שם הלקוח</th><th>מהות הפנייה</th><th>פעולות</th></tr></thead>
-                    <tbody>${rows || '<tr><td colspan="4" class="text-center py-5 text-muted">אין פניות ממתינות. 🎉</td></tr>'}</tbody>
+                <table class="table table-hover">
+                    <thead class="table-light"><tr><th>מספר טלפון</th><th>שם הלקוח</th><th>מהות הפנייה</th><th>פעולות</th></tr></thead>
+                    <tbody>${rows || '<tr><td colspan="4" class="text-center py-5 text-muted">אין פניות ממתינות. עבודה טובה! 🎉</td></tr>'}</tbody>
                 </table>
             </div>
             <script>
                 async function action(chatId) {
-                    if(!confirm('סיים טיפול? הלקוח יוחזר להתחלה.')) return;
+                    if(!confirm('לסיים טיפול ולשלוח את הבוט להתחלה?')) return;
                     await fetch('/api/action', {
                         method:'POST',
                         headers:{'Content-Type':'application/json'},
@@ -222,5 +222,6 @@ app.get('/logout', (req, res) => {
     res.redirect('/dashboard'); 
 });
 
+// הפעלת השרת בפורט 8000 (מותאם ל-Koyeb)
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => console.log(`🚀 TPG System running on port ${PORT}`));
