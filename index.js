@@ -54,36 +54,28 @@ async function createAdmin() {
 // --- פונקציות תקשורת עם וואטסאפ (Green API) ---
 // ==========================================
 
-// פונקציית כפתורים (Interactive Message - הסטנדרט המקצועי)
-async function sendWAButtons(chatId, text, buttons) {
-    if (!INSTANCE_ID || !API_TOKEN) return console.log("⚠️ חסרים נתוני התחברות");
-    
-    const url = `${GREEN_API_HOST}/waInstance${INSTANCE_ID}/sendInteractiveMessage/${API_TOKEN}`;
-    const data = {
-        chatId: chatId,
-        message: {
-            type: "buttonsMessage",
-            buttonsMessage: {
-                contentText: text,
-                footerText: "TPG מערכות אוטומציה",
-                buttons: buttons.map((btn, i) => ({
-                    type: "replyButton",
-                    title: btn,
-                    id: `btn_${i + 1}`
-                }))
-            }
-        }
-    };
-    
-    await axios.post(url, data)
-        .then(() => console.log(`✅ כפתורים נשלחו ל-${chatId}`))
-        .catch(e => console.log("❌ שגיאת כפתורים:", e.response?.data || e.message));
-}
-
+// פונקציה רגילה לשליחת הודעת טקסט
 async function sendWAMessage(chatId, message) {
     if (!INSTANCE_ID || !API_TOKEN) return;
     const url = `${GREEN_API_HOST}/waInstance${INSTANCE_ID}/sendMessage/${API_TOKEN}`;
     await axios.post(url, { chatId, message }).catch(e => console.log("❌ שגיאת הודעה:", e.message));
+}
+
+// המעקף המנצח: פונקציה לשליחת "כפתורים" במסווה של סקר (Poll)
+async function sendWAPoll(chatId, text, options) {
+    if (!INSTANCE_ID || !API_TOKEN) return console.log("⚠️ חסרים נתוני התחברות ל-Green API");
+    
+    const url = `${GREEN_API_HOST}/waInstance${INSTANCE_ID}/sendPoll/${API_TOKEN}`;
+    const data = {
+        chatId: chatId,
+        message: text,
+        options: options.map(opt => ({ optionName: opt })), // הופך כל טקסט לאפשרות לחיצה
+        multipleAnswers: false // הלקוח יכול לבחור רק אפשרות אחת (מתנהג כמו כפתור)
+    };
+    
+    await axios.post(url, data)
+        .then(() => console.log(`✅ כפתורי-סקר נשלחו ל-${chatId}`))
+        .catch(e => console.log("❌ שגיאת סקר:", e.response?.data || e.message));
 }
 
 // ==========================================
@@ -92,30 +84,49 @@ async function sendWAMessage(chatId, message) {
 
 app.post('/webhook', async (req, res) => {
     const body = req.body;
-    if (body.typeWebhook !== 'incomingMessageReceived') return res.sendStatus(200);
-
-    const chatId = body.senderData.chatId;
     
-    // חילוץ חכם של טקסט מכל סוגי ההודעות והכפתורים
-    const text = (body.messageData?.textMessageData?.textMessage || 
-                 body.messageData?.extendedTextMessageData?.text || 
-                 body.messageData?.interactiveMessageData?.buttonsMessageData?.title ||
-                 body.messageData?.buttonsMessageData?.selectedButtonText || 
-                 body.messageData?.buttonsMessageData?.buttonText || "").trim();
-                 
-    console.log(`💬 הודעה נכנסת [${chatId}]: "${text}"`);
+    // מוודא שמדובר בפעולה רלוונטית
+    if (body.typeWebhook !== 'incomingMessageReceived' && body.typeWebhook !== 'outgoingAPIMessageReceived') {
+        return res.sendStatus(200);
+    }
+
+    const chatId = body.senderData?.chatId;
+    if (!chatId) return res.sendStatus(200);
+
+    let text = "";
+    const msgData = body.messageData;
+
+    // 1. ניסיון לחלץ טקסט רגיל
+    if (msgData?.textMessageData?.textMessage) {
+        text = msgData.textMessageData.textMessage;
+    } 
+    else if (msgData?.extendedTextMessageData?.text) {
+        text = msgData.extendedTextMessageData.text;
+    }
+    // 2. המעקף: ניסיון לחלץ את הלחיצה של הלקוח מתוך הסקר (Poll Vote)
+    else if (msgData?.pollVoteMessageData?.votedOptions && msgData.pollVoteMessageData.votedOptions.length > 0) {
+        text = msgData.pollVoteMessageData.votedOptions[0].optionName; // שולף את שם האפשרות שהלקוח סימן
+    }
+    else if (msgData?.pollVoteMessageData?.optionNames && msgData.pollVoteMessageData.optionNames.length > 0) {
+        text = msgData.pollVoteMessageData.optionNames[0]; 
+    }
+
+    text = text.trim();
     if (!text) return res.sendStatus(200);
+
+    console.log(`💬 הלקוח (${chatId}) בחר/שלח: "${text}"`);
 
     let client = await Client.findOne({ chatId }) || new Client({ chatId });
 
-    // --- לוגיקת הבוט ---
+    // --- לוגיקת הבוט (Flow) ---
     if (client.status === 'START' || text === "חזור") {
-        await sendWAButtons(chatId, "ברוכים הבאים ל-TPG פיתוח אוטימציות ובוטים", ["מעבר", "שיחה עם נציג"]);
+        // שולחים את כפתורי הסקר במקום כפתורים רגילים
+        await sendWAPoll(chatId, "ברוכים הבאים ל-TPG פיתוח אוטימציות ובוטים. במה נוכל לעזור?", ["מעבר", "שיחה עם נציג"]);
         client.status = 'MENU';
     } 
     else if (client.status === 'MENU') {
         if (text === "מעבר") {
-            await sendWAButtons(chatId, "אנחנו ב-TPG מתמחים בפיתוח בוטים, מערכות CRM ואוטומציות חכמות לעסקים.", ["שיחה עם נציג", "חזור"]);
+            await sendWAPoll(chatId, "אנחנו ב-TPG מתמחים בפיתוח בוטים, מערכות CRM ואוטומציות חכמות לעסקים.", ["שיחה עם נציג", "חזור"]);
         } else if (text === "שיחה עם נציג") {
             await sendWAMessage(chatId, "בשמחה! איך קוראים לכם?");
             client.status = 'ASK_NAME';
@@ -140,7 +151,6 @@ app.post('/webhook', async (req, res) => {
 // --- מערכת ניהול (Dashboard) מעוצבת ---
 // ==========================================
 
-// מסך התחברות
 app.get('/dashboard', (req, res) => {
     if (req.session.user) return res.redirect('/admin');
     
@@ -179,49 +189,30 @@ app.get('/dashboard', (req, res) => {
     `);
 });
 
-// תהליך התחברות
 app.post('/login', async (req, res) => {
     const user = await User.findOne({ username: req.body.u, pass: req.body.p });
     if (user) {
         req.session.user = user;
         res.redirect('/admin');
     } else {
-        res.send(`
-            <html lang="he" dir="rtl">
-            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
-            <body class="d-flex align-items-center justify-content-center bg-light" style="height:100vh;">
-                <div class="text-center">
-                    <h3 class="text-danger mb-3">פרטים שגויים!</h3>
-                    <a href="/dashboard" class="btn btn-outline-dark">חזור ונסה שוב</a>
-                </div>
-            </body>
-            </html>
-        `);
+        res.send("<script>alert('פרטים שגויים'); window.location='/dashboard';</script>");
     }
 });
 
-// מסך הדשבורד הראשי
 app.get('/admin', async (req, res) => {
     if (!req.session.user) return res.redirect('/dashboard');
     const user = req.session.user;
     
-    // שליפת כל הלקוחות שממתינים לנציג
+    // שליפת כל הלקוחות בסטטוס המתנה
     const clients = await Client.find({ status: 'WAITING' });
     
     let rows = clients.map(c => `
-        <tr class="align-middle">
+        <tr class="align-middle text-center">
             <td class="fw-bold text-secondary" dir="ltr">${c.chatId.replace('@c.us', '')}</td>
-            <td class="fw-bold">${c.name || '<span class="text-muted">לא הוזן</span>'}</td>
-            <td>${c.issue || '<span class="text-muted">לא הוזן</span>'}</td>
-            <td><span class="badge bg-warning text-dark px-3 py-2">ממתין לטיפול</span></td>
-            <td>
-                <button class="btn btn-sm btn-success w-100 fw-bold" onclick="action('${c.chatId}')">סמן כטופל ✔️</button>
-            </td>
+            <td class="fw-bold">${c.name || '<span class="text-muted">---</span>'}</td>
+            <td>${c.issue || '<span class="text-muted">---</span>'}</td>
+            <td><button class="btn btn-success btn-sm w-100 fw-bold" onclick="action('${c.chatId}')">סמן כטופל ✔️</button></td>
         </tr>`).join('');
-
-    if (rows === '') {
-        rows = `<tr><td colspan="5" class="text-center py-5 text-muted fw-bold">אין פניות ממתינות כרגע. עבודה טובה! 🎉</td></tr>`;
-    }
 
     res.send(`
         <!DOCTYPE html>
@@ -231,23 +222,49 @@ app.get('/admin', async (req, res) => {
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>TPG CRM - דשבורד מנהלים</title>
             <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
-            <style>
-                body { background-color: #f4f6f9; }
-                .navbar { background: linear-gradient(90deg, #0d6efd, #0b5ed7); }
-                .table-card { border-radius: 12px; overflow: hidden; border: none; }
-                .table th { background-color: #f8f9fa; color: #495057; }
-            </style>
+            <style>body { background-color: #f4f6f9; }</style>
         </head>
-        <body>
-            <nav class="navbar navbar-dark shadow-sm py-3 mb-4">
-                <div class="container-fluid px-4">
-                    <span class="navbar-brand mb-0 h1 fw-bold fs-4">TPG ⚡ CRM</span>
-                    <div class="d-flex align-items-center text-white">
-                        <span class="me-4 fs-6">מחובר כ: <strong>${user.username}</strong></span>
-                        <a href="/logout" class="btn btn-sm btn-outline-light fw-bold">התנתק 🚪</a>
-                    </div>
+        <body class="p-4">
+            <div class="container bg-white p-4 shadow-sm rounded-4">
+                <div class="d-flex justify-content-between align-items-center mb-4">
+                    <h2 class="m-0 fw-bold">ניהול פניות נכנסות</h2>
+                    <a href="/logout" class="btn btn-outline-danger btn-sm fw-bold">התנתק 🚪</a>
                 </div>
-            </nav>
+                <table class="table table-hover border">
+                    <thead class="table-light text-center">
+                        <tr><th width="20%">מספר טלפון</th><th width="20%">שם הלקוח</th><th width="40%">מהות הפנייה</th><th width="20%">פעולות</th></tr>
+                    </thead>
+                    <tbody>
+                        ${rows || '<tr><td colspan="4" class="text-center py-5 text-muted fw-bold">אין פניות ממתינות.</td></tr>'}
+                    </tbody>
+                </table>
+            </div>
+            <script>
+                async function action(chatId) {
+                    if(!confirm('לסיים טיפול? הלקוח יקבל את תפריט הפתיחה שוב כשישלח הודעה.')) return;
+                    await fetch('/api/action', {
+                        method:'POST', 
+                        headers:{'Content-Type':'application/json'}, 
+                        body:JSON.stringify({chatId: chatId})
+                    });
+                    location.reload(); 
+                }
+            </script>
+        </body>
+        </html>
+    `);
+});
 
-            <div class="container-fluid px-4">
-                <h
+app.post('/api/action', async (req, res) => {
+    await Client.updateOne({ chatId: req.body.chatId }, { status: 'START' }); 
+    res.json({ success: true });
+});
+
+app.get('/logout', (req, res) => { 
+    req.session.destroy(); 
+    res.redirect('/dashboard'); 
+});
+
+// --- הפעלת שרת ---
+const PORT = process.env.PORT || 8000;
+app.listen(PORT, () => console.log(`🚀 TPG System ready on port ${PORT}`));
