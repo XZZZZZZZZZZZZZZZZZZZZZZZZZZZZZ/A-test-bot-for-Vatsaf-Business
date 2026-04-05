@@ -9,10 +9,10 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(session({ secret: 'tpg-secret', resave: false, saveUninitialized: true }));
 
-// משיכת משתני הסביבה (חשוב לוודא שהם מוגדרים ב-Koyeb!)
+// משתני הסביבה (חובה שיהיו מעודכנים ב-Koyeb!)
 const { INSTANCE_ID, API_TOKEN, MONGODB_URI } = process.env;
 
-// חיבור למסד הנתונים
+// חיבור למסד הנתונים והפעלת יצירת מנהל לאחר החיבור
 mongoose.connect(MONGODB_URI)
     .then(() => {
         console.log('✅ TPG CRM DB Active');
@@ -35,7 +35,7 @@ const User = mongoose.model('User', {
     role: String 
 });
 
-// יצירת מנהל מערכת
+// יצירת מנהל מערכת במידה ולא קיים
 async function createAdmin() {
     const adminExists = await User.findOne({ username: 'M' });
     if (!adminExists) {
@@ -44,10 +44,10 @@ async function createAdmin() {
     }
 }
 
-// הגדרת כתובת הבסיס של Green API
+// כתובת הבסיס של שרתי Green API
 const GREEN_API_HOST = 'https://api.green-api.com'; 
 
-// שליחת כפתורים (בפורמט Interactive Message החדש)
+// שליחת כפתורים (Interactive Message החדש)
 async function sendWAButtons(chatId, text, buttons) {
     if (!INSTANCE_ID || !API_TOKEN) return console.log("⚠️ חסרים נתוני התחברות ל-Green API");
     
@@ -79,7 +79,6 @@ async function sendWAMessage(chatId, message) {
 
 // --- הבוט בוואטסאפ (Webhook) ---
 app.post('/webhook', async (req, res) => {
-    // הדפסה ללוגים של Koyeb כדי שנדע שהגיעה הודעה
     console.log("🔔 הודעה חדשה התקבלה מה-Webhook!");
     
     const body = req.body;
@@ -89,12 +88,19 @@ app.post('/webhook', async (req, res) => {
 
     const chatId = body.senderData.chatId;
     
-    // שליפת הטקסט מכל סוגי ההודעות (טקסט רגיל, כפתור רגיל או כפתור אינטראקטיבי)
-    const text = body.messageData.textMessageData?.textMessage || 
-                 body.messageData.interactiveMessageData?.buttonsMessageData?.title ||
-                 body.messageData.buttonsMessageData?.selectedButtonText || "";
+    // --- התיקון: קריאת כל סוגי הטקסט כולל הודעות מורחבות, ציטוטים וכפתורים ---
+    const text = body.messageData?.textMessageData?.textMessage || 
+                 body.messageData?.extendedTextMessageData?.text ||
+                 body.messageData?.interactiveMessageData?.buttonsMessageData?.title ||
+                 body.messageData?.buttonsMessageData?.selectedButtonText || "";
                  
-    console.log(`📝 תוכן ההודעה מ-${chatId}:`, text);
+    console.log(`📝 תוכן ההודעה מ-${chatId}: "${text}"`);
+
+    // הגנה קטנה: אם שלחו תמונה/סטיקר בלי טקסט בכלל, הבוט יתעלם כדי לא לקרוס
+    if (!text) {
+        console.log("⚠️ התקבלה הודעה ללא טקסט (אולי סטיקר/מדיה), המערכת מתעלמת.");
+        return res.sendStatus(200);
+    }
 
     let client = await Client.findOne({ chatId }) || new Client({ chatId });
 
@@ -119,7 +125,7 @@ app.post('/webhook', async (req, res) => {
     else if (client.status === 'ASK_ISSUE') {
         client.issue = text;
         client.status = 'WAITING';
-        await sendWAMessage(chatId, "תודה, נציג יחזור אליך בהקדם.");
+        await sendWAMessage(chatId, "תודה, נציג יחזור אליך בהקדם. בינתיים, המערכת ממתינה.");
     }
 
     await client.save();
@@ -165,13 +171,14 @@ app.get('/admin', async (req, res) => {
 
     res.send(`
         <html dir="rtl"><head><meta charset="utf-8"><title>TPG CRM</title>
-        <style>body{font-family:sans-serif; background:#f4f4f4; padding:20px;} table{width:100%; background:white; border-collapse:collapse;} td,th{padding:10px; border:1px solid #ddd;}</style>
+        <style>body{font-family:sans-serif; background:#f4f4f4; padding:20px;} table{width:100%; background:white; border-collapse:collapse;} td,th{padding:10px; border:1px solid #ddd; input{padding:5px;} button{padding:5px 10px; cursor:pointer;} }</style>
         </head><body>
             <h2>שלום ${user.username} (${user.role}) | <a href="/logout">התנתק</a></h2>
             <table><tr><th>שם</th><th>פנייה</th><th>פעולות</th></tr>${rows}</table>
             <script>
                 async function sendMsg(chatId) {
                     const msg = document.getElementById('msg_'+chatId).value;
+                    if (!msg) return alert('נא להקליד הודעה תחילה');
                     await fetch('/api/chat', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({chatId, msg})});
                     alert('הודעה נשלחה!');
                 }
