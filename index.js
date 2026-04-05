@@ -16,13 +16,12 @@ const Client = mongoose.model('Client', {
     assignedTeam: { type: String, default: 'Regular' }
 });
 
-// פונקציה פשוטה ויציבה לשליחת טקסט
+// שינוי הכתובת כאן! הוספנו 7107
 async function sendWA(chatId, message) {
-    const url = `https://api.green-api.com/waInstance${INSTANCE_ID}/sendMessage/${API_TOKEN}`;
+    const url = `https://7107.api.greenapi.com/waInstance${INSTANCE_ID}/sendMessage/${API_TOKEN}`;
     await axios.post(url, { chatId, message }).catch(e => console.log("WA Error:", e.message));
 }
 
-// --- חלק 1: הבוט בוואטסאפ (תפריט מספרים!) ---
 app.post('/webhook', async (req, res) => {
     const body = req.body;
     if (body.typeWebhook !== 'incomingMessageReceived') return res.sendStatus(200);
@@ -32,7 +31,6 @@ app.post('/webhook', async (req, res) => {
                  
     let client = await Client.findOne({ chatId }) || new Client({ chatId });
 
-    // תפריט ראשי
     if (client.status === 'START' || text === "0") {
         await sendWA(chatId, "שלום! הגעתם ל-TPG פיתוח בוטים ואוטומציות. 🚀\nאיך נוכל לעזור?\n\nהקש 1️⃣ - קצת עלינו 🏢\nהקש 2️⃣ - מעבר לנציג 👨‍💻");
         client.status = 'WAITING_FOR_MENU';
@@ -63,7 +61,6 @@ app.post('/webhook', async (req, res) => {
     res.sendStatus(200);
 });
 
-// --- חלק 2: המערכת החיצונית (דשבורד) ---
 app.get('/dashboard', async (req, res) => {
     const clients = await Client.find({ status: 'WAITING' });
     
@@ -119,7 +116,6 @@ app.get('/dashboard', async (req, res) => {
     `);
 });
 
-// --- חלק 3: ה-API של הדשבורד (פעולות הנציגים) ---
 app.post('/api/action', async (req, res) => {
     const { chatId, type } = req.body;
     let msg = "";
@@ -134,7 +130,6 @@ app.post('/api/action', async (req, res) => {
     if (type === 'end_sale') msg = "תודה רבה שרכשתם אצלנו! 🤝 אנחנו מתחילים לעבוד על האוטומציה שלכם.";
 
     await sendWA(chatId, msg);
-    // מאפס את הלקוח להתחלה
     await Client.updateOne({ chatId }, { status: 'START', assignedTeam: 'Regular' }); 
     res.json({ success: true });
 });
