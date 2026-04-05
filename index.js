@@ -4,70 +4,49 @@ const mongoose = require('mongoose');
 const app = express();
 app.use(express.json());
 
-// משיכת הנתונים מהמשתנים שהגדרת ב-Koyeb
 const { INSTANCE_ID, API_TOKEN, MONGODB_URI } = process.env;
 
-// חיבור למסד הנתונים
 mongoose.connect(MONGODB_URI).then(() => console.log('✅ TPG CRM DB Active'));
 
-// המבנה של הלקוח בתוך הזיכרון
 const Client = mongoose.model('Client', {
     chatId: String,
     name: String,
     issue: String,
     status: { type: String, default: 'START' },
-    assignedTeam: { type: String, default: 'Regular' } // Regular או Professional
+    assignedTeam: { type: String, default: 'Regular' }
 });
 
-// פונקציה לשליחת הודעת טקסט רגילה
+// פונקציה פשוטה ויציבה לשליחת טקסט
 async function sendWA(chatId, message) {
     const url = `https://api.green-api.com/waInstance${INSTANCE_ID}/sendMessage/${API_TOKEN}`;
     await axios.post(url, { chatId, message }).catch(e => console.log("WA Error:", e.message));
 }
 
-// פונקציה לשליחת כפתורים (כולל התיקון לשגיאת ה-400!)
-async function sendButtons(chatId, text, buttonsArray) {
-    const url = `https://api.green-api.com/waInstance${INSTANCE_ID}/sendButtons/${API_TOKEN}`;
-    const data = {
-        chatId: chatId,
-        message: text,
-        buttons: buttonsArray.map((btnText, index) => ({
-            buttonId: String(index + 1),
-            buttonText: btnText
-        }))
-    };
-    try { 
-        await axios.post(url, data); 
-    } catch (e) { 
-        console.error("Button Error:", e.response?.data || e.message); 
-    }
-}
-
-// --- חלק 1: הבוט בוואטסאפ ---
+// --- חלק 1: הבוט בוואטסאפ (תפריט מספרים!) ---
 app.post('/webhook', async (req, res) => {
     const body = req.body;
     if (body.typeWebhook !== 'incomingMessageReceived') return res.sendStatus(200);
 
     const chatId = body.senderData.chatId;
-    
-    // קליטת טקסט רגיל או לחיצה על כפתור
-    const text = body.messageData.textMessageData?.textMessage || 
-                 body.messageData.buttonsMessageData?.selectedButtonText || "";
+    const text = body.messageData.textMessageData?.textMessage?.trim() || "";
                  
     let client = await Client.findOne({ chatId }) || new Client({ chatId });
 
     // תפריט ראשי
-    if (client.status === 'START' || text === "חזור לתפריט") {
-        await sendButtons(chatId, "שלום! הגעתם ל-TPG פיתוח בוטים ואוטומציות. 🚀\nאיך נוכל לעזור?", ["קצת עלינו 🏢", "מעבר לנציג 👨‍💻"]);
+    if (client.status === 'START' || text === "0") {
+        await sendWA(chatId, "שלום! הגעתם ל-TPG פיתוח בוטים ואוטומציות. 🚀\nאיך נוכל לעזור?\n\nהקש 1️⃣ - קצת עלינו 🏢\nהקש 2️⃣ - מעבר לנציג 👨‍💻");
         client.status = 'WAITING_FOR_MENU';
     } 
-    else if (text === "קצת עלינו 🏢") {
-        await sendWA(chatId, "TPG מתמחה בבניית מערכות ניהול חכמות ואוטומציות בוואטסאפ לעסקים.");
-        await sendButtons(chatId, "רוצים להמשיך?", ["מעבר לנציג 👨‍💻", "חזור לתפריט"]);
-    }
-    else if (text === "מעבר לנציג 👨‍💻" || (client.status === 'WAITING_FOR_MENU' && text.includes("נציג"))) {
-        await sendWA(chatId, "בשמחה! נציג כבר יתפנה אליכם.\nרק כדי שנוכל לעזור, איך קוראים לכם?");
-        client.status = 'ASKING_NAME';
+    else if (client.status === 'WAITING_FOR_MENU') {
+        if (text === "1") {
+            await sendWA(chatId, "TPG מתמחה בבניית מערכות ניהול חכמות ואוטומציות בוואטסאפ לעסקים.\n\nרוצים להמשיך?\nהקש 2️⃣ - מעבר לנציג 👨‍💻\nהקש 0️⃣ - חזור לתפריט הראשי");
+        }
+        else if (text === "2") {
+            await sendWA(chatId, "בשמחה! נציג כבר יתפנה אליכם.\nרק כדי שנוכל לעזור, איך קוראים לכם?");
+            client.status = 'ASKING_NAME';
+        } else {
+            await sendWA(chatId, "אנא בחר 1, 2 או 0 כדי לחזור לתפריט.");
+        }
     }
     else if (client.status === 'ASKING_NAME') {
         client.name = text;
@@ -76,17 +55,16 @@ app.post('/webhook', async (req, res) => {
     }
     else if (client.status === 'ASKING_ISSUE') {
         client.issue = text;
-        client.status = 'WAITING'; // עובר להמתנה לנציג בדשבורד
+        client.status = 'WAITING'; 
         await sendWA(chatId, "תודה. הפנייה הועברה לנציג, מיד נענה לכם כאן. 🙏");
     }
 
-    await client.save(); // שומר את כל העדכונים ב-MongoDB
+    await client.save();
     res.sendStatus(200);
 });
 
-// --- חלק 2: המערכת החיצונית (דשבורד לנציגים) ---
+// --- חלק 2: המערכת החיצונית (דשבורד) ---
 app.get('/dashboard', async (req, res) => {
-    // מביא רק את הלקוחות שממתינים לנציג
     const clients = await Client.find({ status: 'WAITING' });
     
     let rows = clients.map(c => `
@@ -133,7 +111,7 @@ app.get('/dashboard', async (req, res) => {
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({ chatId, type })
                     });
-                    location.reload(); // מרענן את הדף אוטומטית אחרי הלחיצה
+                    location.reload(); 
                 }
             </script>
         </body>
@@ -141,13 +119,12 @@ app.get('/dashboard', async (req, res) => {
     `);
 });
 
-// --- חלק 3: ה-API של הדשבורד (מה קורה כשלוחצים על כפתור?) ---
+// --- חלק 3: ה-API של הדשבורד (פעולות הנציגים) ---
 app.post('/api/action', async (req, res) => {
     const { chatId, type } = req.body;
     let msg = "";
 
     if (type === 'to_pro') {
-        // מעביר לצוות מקצועי ומשאיר בסטטוס המתנה
         await Client.updateOne({ chatId }, { assignedTeam: 'Professional' });
         return res.json({ success: true });
     }
@@ -157,7 +134,7 @@ app.post('/api/action', async (req, res) => {
     if (type === 'end_sale') msg = "תודה רבה שרכשתם אצלנו! 🤝 אנחנו מתחילים לעבוד על האוטומציה שלכם.";
 
     await sendWA(chatId, msg);
-    // מאפס את הלקוח כדי שבפעם הבאה שישלח הודעה, יתחיל מהתחלה כתור רגיל
+    // מאפס את הלקוח להתחלה
     await Client.updateOne({ chatId }, { status: 'START', assignedTeam: 'Regular' }); 
     res.json({ success: true });
 });
