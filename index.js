@@ -21,7 +21,7 @@ mongoose.connect(MONGODB_URI)
     })
     .catch(err => console.log('❌ DB Connection Error:', err));
 
-// --- מודלים (Database Models) ---
+// --- מודלים ---
 const Client = mongoose.model('Client', {
     chatId: String,
     name: String,
@@ -44,7 +44,7 @@ async function createAdmin() {
     }
 }
 
-// --- פונקציות וואטסאפ (Green API) ---
+// --- פונקציות וואטסאפ ---
 async function sendWAButtons(chatId, text, buttons) {
     if (!INSTANCE_ID || !API_TOKEN) return console.log("⚠️ חסרים נתוני התחברות ל-Green API");
     
@@ -67,14 +67,13 @@ async function sendWAMessage(chatId, message) {
     await axios.post(url, { chatId, message }).catch(e => console.log("❌ WA Error:", e.message));
 }
 
-// --- Webhook: הבוט שמקבל הודעות ---
+// --- הבוט בוואטסאפ ---
 app.post('/webhook', async (req, res) => {
     const body = req.body;
     if (body.typeWebhook !== 'incomingMessageReceived') return res.sendStatus(200);
 
     const chatId = body.senderData.chatId;
     
-    // חילוץ חכם של הטקסט מכל סוגי ההודעות
     const text = body.messageData?.textMessageData?.textMessage || 
                  body.messageData?.extendedTextMessageData?.text ||
                  body.messageData?.interactiveMessageData?.buttonsMessageData?.title ||
@@ -82,19 +81,20 @@ app.post('/webhook', async (req, res) => {
                  
     console.log(`💬 הודעה נכנסת [${chatId}]: ${text}`);
 
-    if (!text) return res.sendStatus(200); // התעלמות ממדיה/סטיקרים ללא טקסט
+    if (!text) return res.sendStatus(200);
 
     let client = await Client.findOne({ chatId }) || new Client({ chatId });
 
-    // --- לוגיקת הבוט ---
+    // --- לוגיקת הבוט החדשה שלך ---
     if (client.status === 'START' || text === "חזור") {
-        await sendWAButtons(chatId, "ברוכים הבאים ל-TPG! נשמח לעמוד לשירותכם. במה נוכל לעזור היום?", ["מידע עלינו", "שיחה עם נציג"]);
+        // כאן שינינו את הטקסט והכפתורים בדיוק למה שביקשת
+        await sendWAButtons(chatId, "ברוכים הבאים ל-TPG פיתוח אוטימציות ובוטים", ["מעבר", "שיחה עם נציג"]);
         client.status = 'MENU';
     } 
     else if (client.status === 'MENU') {
-        if (text === "מידע עלינו") {
+        if (text === "מעבר") {
             await sendWAButtons(chatId, "אנחנו ב-TPG מתמחים בפיתוח בוטים, מערכות CRM ואוטומציות חכמות לעסקים.", ["שיחה עם נציג", "חזור"]);
-        } else if (text === "שיחה עם נציג") {
+        } else if (text === "שיחה עם נציג" || text === "2") { // תומך גם במקרה שוואטסאפ הופך למספרים
             await sendWAMessage(chatId, "בשמחה! איך קוראים לכם?");
             client.status = 'ASK_NAME';
         }
@@ -118,10 +118,8 @@ app.post('/webhook', async (req, res) => {
 // --- מערכת ניהול (Dashboard) מעוצבת ---
 // ==========================================
 
-// 1. מסך התחברות
 app.get('/dashboard', (req, res) => {
     if (req.session.user) return res.redirect('/admin');
-    
     res.send(`
         <!DOCTYPE html>
         <html lang="he" dir="rtl">
@@ -157,7 +155,6 @@ app.get('/dashboard', (req, res) => {
     `);
 });
 
-// 2. תהליך התחברות
 app.post('/login', async (req, res) => {
     const user = await User.findOne({ username: req.body.u, pass: req.body.p });
     if (user) {
@@ -178,18 +175,15 @@ app.post('/login', async (req, res) => {
     }
 });
 
-// 3. מסך הדשבורד הראשי
 app.get('/admin', async (req, res) => {
     if (!req.session.user) return res.redirect('/dashboard');
     const user = req.session.user;
     
-    // סינון: מנהל רואה הכל, צוות מקצועי רואה רק את שלו
     let filter = { status: 'WAITING' };
     if (user.role !== 'Admin') filter.assignedTeam = user.role;
     
     const clients = await Client.find(filter);
     
-    // יצירת שורות הטבלה בצורה דינמית ונקייה
     let rows = clients.map(c => `
         <tr class="align-middle">
             <td class="fw-bold text-secondary" dir="ltr">${c.chatId.replace('@c.us', '')}</td>
@@ -240,7 +234,6 @@ app.get('/admin', async (req, res) => {
 
             <div class="container-fluid px-4">
                 <h4 class="mb-4 text-dark fw-bold">ניהול פניות נכנסות</h4>
-                
                 <div class="card shadow-sm table-card">
                     <div class="card-body p-0 table-responsive">
                         <table class="table table-hover mb-0">
@@ -274,7 +267,7 @@ app.get('/admin', async (req, res) => {
                             body:JSON.stringify({chatId, msg})
                         });
                         alert('ההודעה נשלחה בהצלחה ללקוח!');
-                        msgInput.value = ''; // ניקוי השדה
+                        msgInput.value = '';
                     } catch(e) { alert('שגיאה בשליחת ההודעה'); }
                 }
                 
@@ -287,7 +280,7 @@ app.get('/admin', async (req, res) => {
                         headers:{'Content-Type':'application/json'}, 
                         body:JSON.stringify({chatId, type})
                     });
-                    location.reload(); // רענון הדף כדי להעלים את השורה
+                    location.reload();
                 }
             </script>
         </body>
@@ -295,7 +288,6 @@ app.get('/admin', async (req, res) => {
     `);
 });
 
-// --- API פעולות (נקראות על ידי הסקריפט בדשבורד) ---
 app.post('/api/chat', async (req, res) => {
     await sendWAMessage(req.body.chatId, req.body.msg);
     res.json({ success: true });
@@ -304,7 +296,7 @@ app.post('/api/chat', async (req, res) => {
 app.post('/api/action', async (req, res) => {
     const { chatId, type } = req.body;
     if (type === 'to_pro') await Client.updateOne({ chatId }, { assignedTeam: 'Professional' });
-    if (type === 'done') await Client.updateOne({ chatId }, { status: 'START' }); // מחזיר את הלקוח להתחלה
+    if (type === 'done') await Client.updateOne({ chatId }, { status: 'START' });
     res.json({ success: true });
 });
 
@@ -313,6 +305,5 @@ app.get('/logout', (req, res) => {
     res.redirect('/dashboard'); 
 });
 
-// --- הפעלת שרת ---
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => console.log(`🚀 TPG System ready on port ${PORT}`));
