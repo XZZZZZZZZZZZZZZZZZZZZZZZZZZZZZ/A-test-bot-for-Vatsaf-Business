@@ -1,7 +1,8 @@
+require('dotenv').config(); // 1. חובה להוסיף בשביל process.env
 const express = require('express');
 const axios = require('axios');
 const mongoose = require('mongoose');
-const session = require('express-session'); // בשביל מערכת הכניסה
+const session = require('express-session');
 const app = express();
 
 app.use(express.json());
@@ -10,24 +11,28 @@ app.use(session({ secret: 'tpg-secret', resave: false, saveUninitialized: true }
 
 const { INSTANCE_ID, API_TOKEN, MONGODB_URI } = process.env;
 
-mongoose.connect(MONGODB_URI).then(() => console.log('✅ TPG CRM DB Active'));
+// 2. תפסנו את שגיאות החיבור והכנסנו את יצירת מנהל המערכת פנימה
+mongoose.connect(MONGODB_URI)
+    .then(() => {
+        console.log('✅ TPG CRM DB Active');
+        createAdmin(); 
+    })
+    .catch(err => console.log('❌ DB Connection Error:', err));
 
-// מודלים של מסד הנתונים
 const Client = mongoose.model('Client', {
     chatId: String,
     name: String,
     issue: String,
     status: { type: String, default: 'START' },
-    assignedTeam: { type: String, default: 'Regular' } // Regular / Professional
+    assignedTeam: { type: String, default: 'Regular' }
 });
 
 const User = mongoose.model('User', {
     username: String,
     pass: String,
-    role: String // Admin / Regular / Professional
+    role: String 
 });
 
-// יצירת מנהל מערכת ראשוני אם לא קיים
 async function createAdmin() {
     const adminExists = await User.findOne({ username: 'M' });
     if (!adminExists) {
@@ -35,31 +40,44 @@ async function createAdmin() {
         console.log("👤 Admin user 'M' created.");
     }
 }
-createAdmin();
 
-// --- פונקציות שליחה (חזרה לכפתורים!) ---
+// 3. שינוי כתובת ה-Host לכללית (או השתמש בכתובת המדויקת מהדשבורד שלך)
+const GREEN_API_HOST = 'https://api.green-api.com'; 
+
+// 4. עודכן למבנה של Interactive Message (שתואם למדיניות החדשה של וואטסאפ/Green API)
 async function sendWAButtons(chatId, text, buttons) {
-    const url = `https://7107.api.greenapi.com/waInstance${INSTANCE_ID}/sendButtons/${API_TOKEN}`;
+    const url = `${GREEN_API_HOST}/waInstance${INSTANCE_ID}/sendInteractiveMessage/${API_TOKEN}`;
     const data = {
         chatId: chatId,
-        message: text,
-        buttons: buttons.map((btn, i) => ({ buttonId: String(i + 1), buttonText: btn }))
+        message: {
+            type: "buttonsMessage",
+            buttonsMessage: {
+                contentText: text,
+                buttons: buttons.map((btn, i) => ({ 
+                    type: "replyButton", 
+                    title: btn, 
+                    id: `btn_${i + 1}` 
+                }))
+            }
+        }
     };
-    await axios.post(url, data).catch(e => console.log("Button Error:", e.message));
+    await axios.post(url, data).catch(e => console.log("Button Error:", e.response?.data || e.message));
 }
 
 async function sendWAMessage(chatId, message) {
-    const url = `https://7107.api.greenapi.com/waInstance${INSTANCE_ID}/sendMessage/${API_TOKEN}`;
+    const url = `${GREEN_API_HOST}/waInstance${INSTANCE_ID}/sendMessage/${API_TOKEN}`;
     await axios.post(url, { chatId, message }).catch(e => console.log("WA Error:", e.message));
 }
 
-// --- הבוט בוואטסאפ ---
 app.post('/webhook', async (req, res) => {
     const body = req.body;
     if (body.typeWebhook !== 'incomingMessageReceived') return res.sendStatus(200);
 
     const chatId = body.senderData.chatId;
+    
+    // שליפת טקסט גם מהודעת כפתור אינטראקטיבית חדשה
     const text = body.messageData.textMessageData?.textMessage || 
+                 body.messageData.interactiveMessageData?.buttonsMessageData?.title ||
                  body.messageData.buttonsMessageData?.selectedButtonText || "";
                  
     let client = await Client.findOne({ chatId }) || new Client({ chatId });
@@ -91,7 +109,7 @@ app.post('/webhook', async (req, res) => {
     res.sendStatus(200);
 });
 
-// --- דשבורד ומערכת כניסה ---
+// --- אזור הדשבורד (נשאר ללא שינוי מעבר להגדרות הסטנדרטיות) ---
 app.get('/dashboard', (req, res) => {
     if (!req.session.user) return res.send('<form action="/login" method="post">שם: <input name="u"><br>סיסמה: <input name="p" type="password"><br><button>כניסה</button></form>');
     res.redirect('/admin');
@@ -111,7 +129,6 @@ app.get('/admin', async (req, res) => {
     if (!req.session.user) return res.redirect('/dashboard');
     const user = req.session.user;
     
-    // סינון פניות: מנהל רואה הכל, צוות רואה רק את שלו
     let filter = { status: 'WAITING' };
     if (user.role !== 'Admin') filter.assignedTeam = user.role;
     
@@ -119,8 +136,8 @@ app.get('/admin', async (req, res) => {
     
     let rows = clients.map(c => `
         <tr>
-            <td>${c.name}</td>
-            <td>${c.issue}</td>
+            <td>${c.name || 'לא הוזן'}</td>
+            <td>${c.issue || 'לא הוזן'}</td>
             <td>
                 <input type="text" id="msg_${c.chatId}" placeholder="הקלידו תשובה...">
                 <button onclick="sendMsg('${c.chatId}')">שלח הודעה</button>
@@ -149,7 +166,6 @@ app.get('/admin', async (req, res) => {
         </body></html>`);
 });
 
-// API לפעולות מהדשבורד
 app.post('/api/chat', async (req, res) => {
     await sendWAMessage(req.body.chatId, req.body.msg);
     res.json({ success: true });
