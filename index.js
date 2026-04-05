@@ -9,10 +9,10 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(session({ secret: 'tpg-secret', resave: false, saveUninitialized: true }));
 
-// משתני הסביבה (חובה שיהיו מעודכנים ב-Koyeb!)
+// משתני הסביבה 
 const { INSTANCE_ID, API_TOKEN, MONGODB_URI } = process.env;
 
-// חיבור למסד הנתונים והפעלת יצירת מנהל לאחר החיבור
+// חיבור למסד הנתונים
 mongoose.connect(MONGODB_URI)
     .then(() => {
         console.log('✅ TPG CRM DB Active');
@@ -86,9 +86,11 @@ app.post('/webhook', async (req, res) => {
     // סינון הודעות שאינן הודעות נכנסות
     if (body.typeWebhook !== 'incomingMessageReceived') return res.sendStatus(200);
 
+    // השורה שתדפיס את ה-JSON השלם בדיוק כפי שהתקבל כדי שנוכל לאתר את הטקסט
+    console.log("📦 המידע הגולמי המלא:", JSON.stringify(body, null, 2));
+
     const chatId = body.senderData.chatId;
     
-    // --- התיקון: קריאת כל סוגי הטקסט כולל הודעות מורחבות, ציטוטים וכפתורים ---
     const text = body.messageData?.textMessageData?.textMessage || 
                  body.messageData?.extendedTextMessageData?.text ||
                  body.messageData?.interactiveMessageData?.buttonsMessageData?.title ||
@@ -96,9 +98,9 @@ app.post('/webhook', async (req, res) => {
                  
     console.log(`📝 תוכן ההודעה מ-${chatId}: "${text}"`);
 
-    // הגנה קטנה: אם שלחו תמונה/סטיקר בלי טקסט בכלל, הבוט יתעלם כדי לא לקרוס
+    // הגנה קטנה למקרה של חוסר טקסט
     if (!text) {
-        console.log("⚠️ התקבלה הודעה ללא טקסט (אולי סטיקר/מדיה), המערכת מתעלמת.");
+        console.log("⚠️ התקבלה הודעה ללא טקסט (ממתין לפענוח המבנה הגולמי).");
         return res.sendStatus(200);
     }
 
@@ -171,7 +173,7 @@ app.get('/admin', async (req, res) => {
 
     res.send(`
         <html dir="rtl"><head><meta charset="utf-8"><title>TPG CRM</title>
-        <style>body{font-family:sans-serif; background:#f4f4f4; padding:20px;} table{width:100%; background:white; border-collapse:collapse;} td,th{padding:10px; border:1px solid #ddd; input{padding:5px;} button{padding:5px 10px; cursor:pointer;} }</style>
+        <style>body{font-family:sans-serif; background:#f4f4f4; padding:20px;} table{width:100%; background:white; border-collapse:collapse;} td,th{padding:10px; border:1px solid #ddd;} input{padding:5px;} button{padding:5px 10px; cursor:pointer;} </style>
         </head><body>
             <h2>שלום ${user.username} (${user.role}) | <a href="/logout">התנתק</a></h2>
             <table><tr><th>שם</th><th>פנייה</th><th>פעולות</th></tr>${rows}</table>
