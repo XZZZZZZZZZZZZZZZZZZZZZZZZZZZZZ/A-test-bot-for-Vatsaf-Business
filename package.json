@@ -9,6 +9,7 @@
     "express": "latest",
     "axios": "latest",
     "dotenv": "latest",
-    "mongoose": "latest"
+    "mongoose": "latest",
+    "express-session": "latest"
   }
 }
