@@ -1,4 +1,4 @@
-require('dotenv').config(); // טעינת משתני הסביבה
+require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const mongoose = require('mongoose');
@@ -7,17 +7,25 @@ const session = require('express-session');
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(session({ secret: 'tpg-secret', resave: false, saveUninitialized: true }));
+app.use(session({ secret: 'tpg-secret-123', resave: false, saveUninitialized: true }));
 
+// --- הגדרות משתנים ---
 const { INSTANCE_ID, API_TOKEN, MONGODB_URI } = process.env;
+const GREEN_API_URL = `https://api.green-api.com/waInstance${INSTANCE_ID}`;
 
-// חיבור למסד נתונים עם טיפול בשגיאות
+// בדיקה בטרמינל אם המפתחות נטענו
+console.log("--- בדיקת הגדרות ---");
+console.log("INSTANCE_ID:", INSTANCE_ID ? "✅ מוגדר" : "❌ חסר!");
+console.log("API_TOKEN:", API_TOKEN ? "✅ מוגדר" : "❌ חסר!");
+console.log("MONGODB_URI:", MONGODB_URI ? "✅ מוגדר" : "❌ חסר!");
+
+// --- חיבור למסד נתונים ---
 mongoose.connect(MONGODB_URI)
     .then(() => {
-        console.log('✅ TPG CRM DB Active');
-        createAdmin(); // יצירת מנהל רק אחרי חיבור מוצלח
+        console.log('✅ מחובר למסד הנתונים של TPG');
+        createAdmin();
     })
-    .catch(err => console.error('❌ MongoDB Connection Error:', err));
+    .catch(err => console.error('❌ שגיאת התחברות ל-DB:', err.message));
 
 // מודלים
 const Client = mongoose.model('Client', {
@@ -35,93 +43,117 @@ const User = mongoose.model('User', {
 });
 
 async function createAdmin() {
-    const adminExists = await User.findOne({ username: 'M' });
-    if (!adminExists) {
+    const admin = await User.findOne({ username: 'M' });
+    if (!admin) {
         await new User({ username: 'M', pass: '1', role: 'Admin' }).save();
-        console.log("👤 Admin user 'M' created (User: M, Pass: 1)");
+        console.log("👤 משתמש מנהל 'M' נוצר בהצלחה.");
     }
 }
 
-// פונקציות שליחה מעודכנות (שימוש ב-Interactive Message עבור כפתורים)
-async function sendWAButtons(chatId, text, buttons) {
-    const url = `https://api.green-api.com/waInstance${INSTANCE_ID}/sendInteractiveMessage/${API_TOKEN}`;
-    const data = {
-        chatId: chatId,
-        message: {
-            type: "buttonsMessage",
-            buttonsMessage: {
-                contentText: text,
-                buttons: buttons.map((btn, i) => ({
-                    type: "replyButton",
-                    title: btn,
-                    id: `btn_${i + 1}`
-                }))
-            }
-        }
-    };
-    try {
-        await axios.post(url, data);
-    } catch (e) {
-        console.log("Button Error:", e.response?.data || e.message);
-        // אם כפתורים נכשלים, שולח הודעת טקסט רגילה כגיבוי
-        await sendWAMessage(chatId, text + "\n\n(בחר: " + buttons.join(" / ") + ")");
-    }
-}
+// --- פונקציות שליחה לוואטסאפ ---
 
+// שליחת הודעה רגילה
 async function sendWAMessage(chatId, message) {
-    const url = `https://api.green-api.com/waInstance${INSTANCE_ID}/sendMessage/${API_TOKEN}`;
-    await axios.post(url, { chatId, message }).catch(e => console.log("WA Error:", e.message));
+    try {
+        const url = `${GREEN_API_URL}/sendMessage/${API_TOKEN}`;
+        await axios.post(url, { chatId, message });
+        console.log(`✉️ הודעה נשלחה ל-${chatId}`);
+    } catch (e) {
+        console.error("❌ שגיאה בשליחת הודעה:", e.response?.data || e.message);
+    }
 }
 
-// לוגיקת הבוט
+// שליחת כפתורים (בפורמט החדש והנתמך)
+async function sendWAButtons(chatId, text, buttons) {
+    try {
+        const url = `${GREEN_API_URL}/sendInteractiveMessage/${API_TOKEN}`;
+        const data = {
+            chatId: chatId,
+            message: {
+                type: "buttonsMessage",
+                buttonsMessage: {
+                    contentText: text,
+                    buttons: buttons.map((btn, i) => ({
+                        type: "replyButton",
+                        title: btn,
+                        id: `btn_${i + 1}`
+                    }))
+                }
+            }
+        };
+        await axios.post(url, data);
+        console.log(`🔘 כפתורים נשלחו ל-${chatId}`);
+    } catch (e) {
+        console.error("❌ שגיאה בשליחת כפתורים, שולח טקסט רגיל במקום...");
+        // גיבוי למקרה שהכפתורים נכשלים (וואטסאפ חוסם לפעמים)
+        const fallbackText = `${text}\n\nהשב במילה:\n* ${buttons.join('\n* ')}`;
+        await sendWAMessage(chatId, fallbackText);
+    }
+}
+
+// --- ה-WEBHOOK (הלב של הבוט) ---
 app.post('/webhook', async (req, res) => {
     try {
         const body = req.body;
+        
+        // סינון הודעות שאינן הודעות נכנסות
         if (body.typeWebhook !== 'incomingMessageReceived') return res.sendStatus(200);
 
         const chatId = body.senderData.chatId;
-        // חילוץ טקסט - תומך בטקסט רגיל ובכפתורים החדשים
         const text = body.messageData.textMessageData?.textMessage || 
                      body.messageData.interactiveMessageData?.buttonsMessageData?.title || 
-                     "";
-                     
+                     body.messageData.buttonsMessageData?.selectedButtonText || "";
+
+        console.log(`📩 הודעה מ-${chatId}: "${text}"`);
+
         let client = await Client.findOne({ chatId });
         if (!client) client = new Client({ chatId });
 
+        // לוגיקת הבוט (מכונת מצבים)
         if (client.status === 'START' || text === "חזור") {
-            await sendWAButtons(chatId, "ברוכים הבאים ל-TPG! במה נוכל לעזור?", ["מידע עלינו", "שיחה עם נציג"]);
+            await sendWAButtons(chatId, "שלום! ברוכים הבאים ל-TPG. במה נוכל לעזור?", ["מידע עלינו", "שיחה עם נציג"]);
             client.status = 'MENU';
         } 
         else if (client.status === 'MENU') {
             if (text === "מידע עלינו") {
-                await sendWAButtons(chatId, "אנחנו מפתחים בוטים ואוטומציות חכמות.", ["שיחה עם נציג", "חזור"]);
+                await sendWAButtons(chatId, "אנחנו מפתחים פתרונות AI ואוטומציות מתקדמות.", ["שיחה עם נציג", "חזור"]);
             } else if (text === "שיחה עם נציג") {
-                await sendWAMessage(chatId, "בשמחה. איך קוראים לכם?");
+                await sendWAMessage(chatId, "בשמחה. מה השם שלכם?");
                 client.status = 'ASK_NAME';
             }
         }
         else if (client.status === 'ASK_NAME') {
             client.name = text;
-            await sendWAMessage(chatId, `נעים מאוד ${text}, מה מהות הפנייה?`);
+            await sendWAMessage(chatId, `נעים מאוד ${text}, מה מהות הפנייה שלך?`);
             client.status = 'ASK_ISSUE';
         }
         else if (client.status === 'ASK_ISSUE') {
             client.issue = text;
             client.status = 'WAITING';
-            await sendWAMessage(chatId, "תודה, נציג יחזור אליך בהקדם.");
+            await sendWAMessage(chatId, "תודה. פנייתך הועברה לנציג, נחזור אליך בהקדם.");
         }
 
         await client.save();
         res.sendStatus(200);
     } catch (err) {
-        console.error("Webhook Error:", err);
+        console.error("⚠️ שגיאה ב-Webhook:", err.message);
         res.sendStatus(500);
     }
 });
 
-// --- דשבורד ---
+// --- דשבורד ניהול ---
 app.get('/dashboard', (req, res) => {
-    if (!req.session.user) return res.send('<html dir="rtl"><h2>כניסה למערכת TPG</h2><form action="/login" method="post">שם: <input name="u"><br>סיסמה: <input name="p" type="password"><br><button>כניסה</button></form></html>');
+    if (!req.session.user) {
+        return res.send(`
+            <html dir="rtl"><body style="font-family:sans-serif; text-align:center; padding:50px;">
+            <h2>כניסה למערכת TPG</h2>
+            <form action="/login" method="post">
+                <input name="u" placeholder="שם משתמש"><br><br>
+                <input name="p" type="password" placeholder="סיסמה"><br><br>
+                <button type="submit">התחבר</button>
+            </form>
+            </body></html>`);
+    }
     res.redirect('/admin');
 });
 
@@ -147,27 +179,28 @@ app.get('/admin', async (req, res) => {
     let rows = clients.map(c => `
         <tr>
             <td>${c.name || 'לא ידוע'}</td>
-            <td>${c.issue || 'אין פירוט'}</td>
+            <td>${c.issue || 'ללא פירוט'}</td>
             <td>
-                <input type="text" id="msg_${c.chatId}" placeholder="תשובה...">
+                <input type="text" id="msg_${c.chatId}" placeholder="תשובה לנציג...">
                 <button onclick="sendMsg('${c.chatId}')">שלח</button>
-                <button onclick="action('${c.chatId}', 'to_pro')">למקצועי</button>
-                <button onclick="action('${c.chatId}', 'done')">סיים</button>
+                <button onclick="action('${c.chatId}', 'to_pro')" style="background:orange">למקצועי</button>
+                <button onclick="action('${c.chatId}', 'done')" style="background:green; color:white">סיים</button>
             </td>
         </tr>`).join('');
 
     res.send(`
-        <html dir="rtl"><head><meta charset="utf-8"><title>TPG CRM</title>
-        <style>body{font-family:sans-serif; background:#f4f4f4; padding:20px;} table{width:100%; background:white; border-collapse:collapse;} td,th{padding:10px; border:1px solid #ddd; text-align:right;}</style>
+        <html dir="rtl"><head><meta charset="utf-8"><title>TPG Admin</title>
+        <style>body{font-family:sans-serif; background:#f0f2f5; padding:20px;} table{width:100%; border-collapse:collapse; background:white;} td,th{padding:12px; border:1px solid #ddd; text-align:right;}</style>
         </head><body>
-            <h2>שלום ${user.username} (${user.role}) | <a href="/logout">התנתק</a></h2>
-            <table><tr><th>שם</th><th>פנייה</th><th>פעולות</th></tr>${rows}</table>
+            <h2>שלום ${user.username} | <a href="/logout">התנתק</a></h2>
+            <h3>פניות ממתינות לטיפול:</h3>
+            <table><tr><th>שם הלקוח</th><th>תיאור התקלה</th><th>פעולות</th></tr>${rows}</table>
             <script>
                 async function sendMsg(chatId) {
                     const msg = document.getElementById('msg_'+chatId).value;
-                    if(!msg) return alert('הכנס הודעה');
+                    if(!msg) return alert('נא להזין הודעה');
                     await fetch('/api/chat', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({chatId, msg})});
-                    alert('נשלח!');
+                    alert('הודעה נשלחה לוואטסאפ!');
                 }
                 async function action(chatId, type) {
                     await fetch('/api/action', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({chatId, type})});
@@ -177,19 +210,5 @@ app.get('/admin', async (req, res) => {
         </body></html>`);
 });
 
-app.post('/api/chat', async (req, res) => {
-    await sendWAMessage(req.body.chatId, req.body.msg);
-    res.json({ success: true });
-});
-
-app.post('/api/action', async (req, res) => {
-    const { chatId, type } = req.body;
-    if (type === 'to_pro') await Client.updateOne({ chatId }, { assignedTeam: 'Professional' });
-    if (type === 'done') await Client.updateOne({ chatId }, { status: 'START' });
-    res.json({ success: true });
-});
-
-app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/dashboard'); });
-
-const PORT = process.env.PORT || 8000;
-app.listen(PORT, () => console.log(`🚀 TPG System ready on port ${PORT}`));
+// API לפעולות מהדשבורד
+app.post('/api/c
