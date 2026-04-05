@@ -1,9 +1,14 @@
 require('dotenv').config();
 const express = require('express');
+const http = require('http'); // נוסף עבור Socket.io
+const { Server } = require('socket.io'); // נוסף עבור Socket.io
 const axios = require('axios');
 const mongoose = require('mongoose');
 const session = require('express-session');
+
 const app = express();
+const server = http.createServer(app); // עטיפת השרת
+const io = new Server(server, { cors: { origin: '*' } }); // הפעלת הסוקטים
 
 // --- הגדרות שרת בסיסיות ---
 app.use(express.json());
@@ -19,46 +24,115 @@ const { INSTANCE_ID, API_TOKEN, MONGODB_URI } = process.env;
 const GREEN_API_HOST = 'https://api.green-api.com'; 
 
 // --- חיבור למסד הנתונים MongoDB ---
-mongoose.connect(MONGODB_URI)
+mongoose.connect(MONGODB_URI || 'mongodb://localhost:27017/tpg_crm')
     .then(() => {
         console.log('✅ TPG CRM DB Active');
         createAdmin(); 
     })
     .catch(err => console.log('❌ DB Connection Error:', err));
 
-// מודלים של מסד הנתונים
-const Client = mongoose.model('Client', {
+// מודלים של מסד הנתונים (עודכנו לשמירת היסטוריית שיחות והרשאות)
+const ClientSchema = new mongoose.Schema({
     chatId: String,
     name: String,
     issue: String,
-    status: { type: String, default: 'START' },
+    status: { type: String, default: 'START' }, // START, MENU, ASK_NAME, ASK_ISSUE, WAITING, IN_CHAT
+    messages: [{ sender: String, text: String, timestamp: { type: Date, default: Date.now } }] // היסטוריית הצ'אט
 });
+const Client = mongoose.model('Client', ClientSchema);
 
-const User = mongoose.model('User', {
+const UserSchema = new mongoose.Schema({
     username: String,
-    pass: String
+    pass: String,
+    role: { type: String, default: 'agent' }, // admin / agent
+    isProfessional: { type: Boolean, default: false }
 });
+const User = mongoose.model('User', UserSchema);
 
 // יצירת משתמש מנהל ראשוני
 async function createAdmin() {
     const adminExists = await User.findOne({ username: 'M' });
     if (!adminExists) {
-        await new User({ username: 'M', pass: '1' }).save();
-        console.log("👤 Admin user 'M' created.");
+        await new User({ username: 'M', pass: '1', role: 'admin' }).save();
+        await new User({ username: 'Agent1', pass: '1', role: 'agent', isProfessional: false }).save(); // נציג לדוגמה
+        console.log("👤 Admin user 'M' and test agent 'Agent1' created.");
     }
 }
 
-// --- פונקציית שליחת הודעת טקסט רגילה ---
+// --- פונקציית שליחת הודעת טקסט רגילה (וואטסאפ) ---
 async function sendWAMessage(chatId, message) {
-    if (!INSTANCE_ID || !API_TOKEN) return;
+    if (!INSTANCE_ID || !API_TOKEN) {
+        console.log(`[Mock WA Send to ${chatId}]: ${message}`);
+        return;
+    }
     const url = `${GREEN_API_HOST}/waInstance${INSTANCE_ID}/sendMessage/${API_TOKEN}`;
     await axios.post(url, { chatId, message }).catch(e => console.log("❌ שגיאת הודעה:", e.message));
 }
 
 // ==========================================
+// --- מערכת נוכחות וסוקטים (זמן אמת) ---
+// ==========================================
+const onlineUsers = new Map(); // שמירת משתמשים מחוברים בזיכרון
+
+io.on('connection', (socket) => {
+    
+    // 1. התחברות נציג לדשבורד
+    socket.on('login', (userData) => {
+        onlineUsers.set(socket.id, { ...userData, socketId: socket.id, loginTime: new Date() });
+        io.emit('presence_updated', Array.from(onlineUsers.values()));
+    });
+
+    // 2. נציג שולח הודעה ללקוח מהדשבורד
+    socket.on('agent_send_message', async (data) => {
+        const { chatId, text, agentName } = data;
+        
+        // שליחה לוואטסאפ של הלקוח
+        await sendWAMessage(chatId, text);
+        
+        // שמירה במסד הנתונים
+        const updatedClient = await Client.findOneAndUpdate(
+            { chatId },
+            { 
+                $push: { messages: { sender: agentName, text } },
+                $set: { status: 'IN_CHAT' } // מעביר לסטטוס צ'אט פעיל
+            },
+            { new: true }
+        );
+        
+        // עדכון כל הדשבורדים בזמן אמת
+        io.emit('chat_updated', { chatId, message: { sender: agentName, text, timestamp: new Date() } });
+    });
+
+    // 3. סגירת פנייה על ידי הנציג
+    socket.on('close_ticket', async (chatId) => {
+        await Client.updateOne({ chatId }, { status: 'START' });
+        // שליחת הודעת סיום ללקוח (אופציונלי)
+        await sendWAMessage(chatId, "הפנייה נסגרה על ידי הנציג. לעזרה נוספת, שלח הודעה חדשה.");
+        io.emit('ticket_closed', chatId);
+    });
+
+    // 4. פעולות מנהל: ניתוק בכוח ושינוי הרשאות
+    socket.on('force_logout', (socketIdToKick) => {
+        io.to(socketIdToKick).emit('kicked_out', 'נותקת על ידי מנהל המערכת.');
+        io.sockets.sockets.get(socketIdToKick)?.disconnect(true);
+    });
+
+    socket.on('toggle_professional', async (data) => {
+        const { username, isProfessional } = data;
+        await User.updateOne({ username }, { isProfessional });
+        io.emit('system_alert', `ההרשאות של ${username} עודכנו.`);
+    });
+
+    // התנתקות טבעית
+    socket.on('disconnect', () => {
+        onlineUsers.delete(socket.id);
+        io.emit('presence_updated', Array.from(onlineUsers.values()));
+    });
+});
+
+// ==========================================
 // --- Webhook: הבוט שמקבל הודעות נכנסות ---
 // ==========================================
-
 app.post('/webhook', async (req, res) => {
     const body = req.body;
     if (body.typeWebhook !== 'incomingMessageReceived') return res.sendStatus(200);
@@ -66,17 +140,28 @@ app.post('/webhook', async (req, res) => {
     const chatId = body.senderData?.chatId;
     if (!chatId) return res.sendStatus(200);
 
-    // חילוץ הטקסט שהלקוח הקליד
     let text = (body.messageData?.textMessageData?.textMessage || 
                 body.messageData?.extendedTextMessageData?.text || "").trim();
 
     if (!text) return res.sendStatus(200);
-
     console.log(`💬 הלקוח (${chatId}) שלח: "${text}"`);
 
-    let client = await Client.findOne({ chatId }) || new Client({ chatId });
+    let client = await Client.findOne({ chatId });
+    if (!client) {
+        client = new Client({ chatId });
+    }
 
-    // --- לוגיקת הבוט (תפריט ממוספר ואמין) ---
+    // שמירת ההודעה הנכנסת להיסטוריה
+    client.messages.push({ sender: 'customer', text });
+
+    // אם הלקוח כרגע בשיחה עם נציג או ממתין, מעבירים ישירות לדשבורד ולא מקפיצים בוט
+    if (client.status === 'WAITING' || client.status === 'IN_CHAT') {
+        await client.save();
+        io.emit('chat_updated', { chatId, message: { sender: 'customer', text, timestamp: new Date() } });
+        return res.sendStatus(200);
+    }
+
+    // --- לוגיקת הבוט האוטומטית ---
     if (client.status === 'START' || text === "חזור") {
         const menuText = 
             `*ברוכים הבאים ל-TPG פיתוח אוטימציות ובוטים* 🤖\n\n` +
@@ -106,6 +191,9 @@ app.post('/webhook', async (req, res) => {
         client.issue = text;
         client.status = 'WAITING';
         await sendWAMessage(chatId, "תודה! הפנייה הועברה לצוות שלנו. נציג יחזור אליך בהקדם. 🚀");
+        
+        // התראת סוקט לדשבורד שיש לקוח חדש שממתין
+        io.emit('new_ticket', client);
     }
 
     await client.save();
@@ -129,9 +217,9 @@ app.get('/dashboard', (req, res) => {
             <title>TPG CRM - התחברות</title>
             <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
             <style>
-                body { background-color: #f0f2f5; height: 100vh; display: flex; align-items: center; justify-content: center; font-family: system-ui, -apple-system, sans-serif; }
+                body { background-color: #f0f2f5; height: 100vh; display: flex; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
                 .login-card { max-width: 400px; width: 100%; border-radius: 15px; border: none; }
-                .brand-logo { font-size: 2.2rem; font-weight: 900; color: #0d6efd; text-align: center; margin-bottom: 20px; letter-spacing: 1px;}
+                .brand-logo { font-size: 2.2rem; font-weight: 900; color: #0d6efd; text-align: center; margin-bottom: 20px; }
             </style>
         </head>
         <body>
@@ -141,11 +229,11 @@ app.get('/dashboard', (req, res) => {
                 <form action="/login" method="post">
                     <div class="mb-3">
                         <label class="form-label fw-bold">שם משתמש</label>
-                        <input type="text" name="u" class="form-control" placeholder="הקלד שם משתמש..." required>
+                        <input type="text" name="u" class="form-control" required>
                     </div>
                     <div class="mb-4">
                         <label class="form-label fw-bold">סיסמה</label>
-                        <input type="password" name="p" class="form-control" placeholder="הקלד סיסמה..." required>
+                        <input type="password" name="p" class="form-control" required>
                     </div>
                     <button type="submit" class="btn btn-primary w-100 py-2 fw-bold fs-5 shadow-sm">היכנס למערכת</button>
                 </form>
@@ -159,31 +247,20 @@ app.get('/dashboard', (req, res) => {
 app.post('/login', async (req, res) => {
     const user = await User.findOne({ username: req.body.u, pass: req.body.p });
     if (user) {
-        req.session.user = user;
+        req.session.user = { username: user.username, role: user.role, isProfessional: user.isProfessional };
         res.redirect('/admin');
     } else {
         res.send("<script>alert('פרטים שגויים'); window.location='/dashboard';</script>");
     }
 });
 
-// מסך הניהול הראשי (טבלת פניות)
+// מסך הניהול הראשי (זמן אמת)
 app.get('/admin', async (req, res) => {
     if (!req.session.user) return res.redirect('/dashboard');
     const user = req.session.user;
     
-    // שליפת רק הלקוחות שצריכים טיפול
-    const clients = await Client.find({ status: 'WAITING' });
-    
-    let rows = clients.map(c => `
-        <tr class="align-middle text-center">
-            <td class="fw-bold text-secondary" dir="ltr">${c.chatId.replace('@c.us', '')}</td>
-            <td class="fw-bold">${c.name || '<span class="text-muted">---</span>'}</td>
-            <td>${c.issue || '<span class="text-muted">---</span>'}</td>
-            <td>
-                <span class="badge bg-warning text-dark px-3 py-2 mb-2 d-block w-100">ממתין לטיפול</span>
-                <button class="btn btn-success btn-sm w-100 fw-bold shadow-sm" onclick="action('${c.chatId}')">סמן כטופל ✔️</button>
-            </td>
-        </tr>`).join('');
+    // שליפת כל הלקוחות שממתינים או נמצאים בשיחה פעילה
+    const clients = await Client.find({ status: { $in: ['WAITING', 'IN_CHAT'] } });
 
     res.send(`
         <!DOCTYPE html>
@@ -191,70 +268,151 @@ app.get('/admin', async (req, res) => {
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>TPG CRM - דשבורד מנהלים</title>
+            <title>TPG CRM - Workspace</title>
             <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+            <script src="/socket.io/socket.io.js"></script>
             <style>
-                body { background-color: #f4f6f9; font-family: system-ui, -apple-system, sans-serif; }
-                .table-container { border-radius: 12px; overflow: hidden; }
-                .table th { background-color: #f8f9fa; }
+                body { background-color: #f4f6f9; font-family: system-ui, sans-serif; overflow-x: hidden; }
+                .chat-box { height: 400px; overflow-y: auto; background: #e5ddd5; border-radius: 8px; padding: 15px; }
+                .msg { max-width: 75%; padding: 8px 12px; border-radius: 8px; margin-bottom: 10px; clear: both; }
+                .msg.customer { background: #fff; float: right; border-top-right-radius: 0; }
+                .msg.agent { background: #dcf8c6; float: left; border-top-left-radius: 0; text-align: left; }
+                .ticket-item { cursor: pointer; transition: 0.2s; }
+                .ticket-item:hover { background-color: #f8f9fa; }
             </style>
         </head>
-        <body class="p-2 p-md-4">
-            <div class="container bg-white p-4 shadow-sm rounded-4 border">
-                <div class="d-flex justify-content-between align-items-center mb-4 border-bottom pb-3">
-                    <div>
-                        <h2 class="m-0 fw-bold text-primary">TPG מערכות ניהול</h2>
-                        <span class="text-muted small">מחובר כ: <strong>${user.username}</strong></span>
-                    </div>
-                    <a href="/logout" class="btn btn-outline-danger btn-sm fw-bold px-3">התנתק 🚪</a>
+        <body class="p-3">
+            <div class="container-fluid">
+                <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom">
+                    <h3 class="m-0 fw-bold text-primary">TPG Workspace <span class="badge bg-secondary fs-6">${user.role === 'admin' ? 'מנהל' : 'נציג'}</span></h3>
+                    <a href="/logout" class="btn btn-outline-danger btn-sm fw-bold">התנתק 🚪</a>
                 </div>
-                
-                <h4 class="mb-3 fw-bold text-dark">פניות נכנסות:</h4>
-                <div class="table-responsive table-container border">
-                    <table class="table table-hover mb-0">
-                        <thead class="table-light text-center">
-                            <tr>
-                                <th width="20%">מספר טלפון</th>
-                                <th width="20%">שם הלקוח</th>
-                                <th width="40%">מהות הפנייה</th>
-                                <th width="20%">פעולות טיפול</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${rows || '<tr><td colspan="4" class="text-center py-5 text-muted fw-bold fs-5">אין פניות ממתינות כרגע. אפשר לשתות קפה ☕</td></tr>'}
-                        </tbody>
-                    </table>
+
+                <div class="row">
+                    <div class="col-md-3 border-end">
+                        <h5 class="fw-bold">פניות פעילות</h5>
+                        <ul class="list-group" id="tickets-list">
+                            ${clients.map(c => `
+                                <li class="list-group-item ticket-item" onclick="openChat('${c.chatId}', '${c.name || 'לקוח'}')">
+                                    <strong>${c.name || c.chatId.replace('@c.us','')}</strong><br>
+                                    <small class="text-muted">${c.issue}</small>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+
+                    <div class="col-md-6">
+                        <h5 class="fw-bold" id="chat-header">בחר פנייה כדי להתחיל</h5>
+                        <div class="chat-box border mb-2" id="chat-box"></div>
+                        <div class="input-group">
+                            <input type="text" id="chat-input" class="form-control" placeholder="הקלד הודעה..." disabled>
+                            <button class="btn btn-primary" id="btn-send" disabled onclick="sendMessage()">שלח</button>
+                            <button class="btn btn-success" id="btn-close" disabled onclick="closeTicket()">סיום טיפול ✔️</button>
+                        </div>
+                    </div>
+
+                    <div class="col-md-3 border-start ${user.role !== 'admin' ? 'd-none' : ''}">
+                        <h5 class="fw-bold">צוות מחובר בזמן אמת</h5>
+                        <ul class="list-group" id="online-users-list"></ul>
+                    </div>
                 </div>
             </div>
-            
+
             <script>
-                async function action(chatId) {
-                    if(!confirm('סיימת לטפל בלקוח? הסטטוס שלו יאופס והבוט יתחיל מחדש בשיחה הבאה.')) return;
-                    await fetch('/api/action', {
-                        method:'POST', 
-                        headers:{'Content-Type':'application/json'}, 
-                        body:JSON.stringify({chatId: chatId})
-                    });
-                    location.reload(); 
+                // הגדרת נתוני המשתמש הנוכחי והתחברות לסוקט
+                const currentUser = { username: '${user.username}', role: '${user.role}' };
+                const socket = io();
+                
+                let activeChatId = null;
+
+                socket.on('connect', () => {
+                    socket.emit('login', currentUser);
+                });
+
+                // --- אירועי צ'אט ---
+                function openChat(chatId, name) {
+                    activeChatId = chatId;
+                    document.getElementById('chat-header').innerText = "בשיחה עם: " + name;
+                    document.getElementById('chat-input').disabled = false;
+                    document.getElementById('btn-send').disabled = false;
+                    document.getElementById('btn-close').disabled = false;
+                    document.getElementById('chat-box').innerHTML = '<div class="text-center text-muted mt-5">היסטוריית שיחה נטענת... (כדי לראות היסטוריה מלאה יש להוסיף שליפת API)</div>';
                 }
+
+                function sendMessage() {
+                    const input = document.getElementById('chat-input');
+                    if(!input.value.trim() || !activeChatId) return;
+                    
+                    socket.emit('agent_send_message', {
+                        chatId: activeChatId,
+                        text: input.value.trim(),
+                        agentName: currentUser.username
+                    });
+                    input.value = '';
+                }
+
+                function closeTicket() {
+                    if(confirm("לסגור פנייה זו? הלקוח יחזור לסטטוס בוט אוטומטי.")) {
+                        socket.emit('close_ticket', activeChatId);
+                        location.reload();
+                    }
+                }
+
+                socket.on('chat_updated', (data) => {
+                    if(data.chatId === activeChatId) {
+                        const chatBox = document.getElementById('chat-box');
+                        const isAgent = data.message.sender !== 'customer';
+                        chatBox.innerHTML += \`<div class="msg \${isAgent ? 'agent' : 'customer'}">
+                            <strong>\${isAgent ? 'אני' : 'לקוח'}:</strong> \${data.message.text}
+                        </div>\`;
+                        chatBox.scrollTop = chatBox.scrollHeight;
+                    }
+                });
+
+                socket.on('ticket_closed', (chatId) => {
+                    if(chatId === activeChatId) {
+                        alert("הפנייה נסגרה.");
+                        location.reload();
+                    }
+                });
+
+                socket.on('new_ticket', () => location.reload()); // מרענן את הרשימה כשיש לקוח חדש
+
+                // --- אירועי מנהל ---
+                socket.on('presence_updated', (users) => {
+                    if(currentUser.role !== 'admin') return;
+                    const list = document.getElementById('online-users-list');
+                    list.innerHTML = users.map(u => \`
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            \${u.username}
+                            \${u.username !== currentUser.username ? \`<button class="btn btn-sm btn-danger" onclick="kickUser('\${u.socketId}')">נתק</button>\` : ''}
+                        </li>
+                    \`).join('');
+                });
+
+                function kickUser(socketId) {
+                    if(confirm("לנתק משתמש זה בכוח?")) {
+                        socket.emit('force_logout', socketId);
+                    }
+                }
+
+                socket.on('kicked_out', (reason) => {
+                    alert(reason);
+                    window.location.href = '/logout';
+                });
+
             </script>
         </body>
         </html>
     `);
 });
 
-// פקודת API לסיום טיפול בלקוח
-app.post('/api/action', async (req, res) => {
-    await Client.updateOne({ chatId: req.body.chatId }, { status: 'START' }); 
-    res.json({ success: true });
-});
-
-// התנתקות
+// התנתקות ידנית
 app.get('/logout', (req, res) => { 
     req.session.destroy(); 
     res.redirect('/dashboard'); 
 });
 
-// --- הפעלת שרת ---
+// --- הפעלת שרת משולב ---
 const PORT = process.env.PORT || 8000;
-app.listen(PORT, () => console.log(`🚀 TPG System ready on port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 TPG System (Bot + Realtime CRM) ready on port ${PORT}`));
