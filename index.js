@@ -16,27 +16,21 @@ mongoose.connect(MONGODB_URI)
 const Client = mongoose.model('Client', {
     chatId: String,
     name: String,
-    status: { type: String, default: 'START' }
+    lastInteraction: { type: Date, default: Date.now }
 });
 
-async function sendMenu(chatId) {
-    // התיקון כאן: הוספתי את המקף ב-green-api.com והשתמשתי בכתובת הכללית
-    const url = `https://api.green-api.com/waInstance${INSTANCE_ID}/sendTemplateMessage/${API_TOKEN}`;
+async function sendResponse(chatId, text) {
+    // כתובת מדויקת לשרת 7107 שלך
+    const url = `https://7107.api.green-api.com/waInstance${INSTANCE_ID}/sendMessage/${API_TOKEN}`;
     
     const data = {
         chatId: chatId,
-        templateMessage: {
-            content: { text: "ברוכים הבאים ל-TPG! 👋\nאיך נוכל לעזור היום?" },
-            buttons: [
-                { index: 1, quickReplyButton: { displayText: "קצת עלינו", id: "about" } },
-                { index: 2, quickReplyButton: { displayText: "נציג אנושי", id: "human" } }
-            ]
-        }
+        message: text
     };
 
     try { 
         await axios.post(url, data); 
-        console.log(`✅ תפריט נשלח ל-${chatId}`);
+        console.log(`✅ הודעה נשלחה בהצלחה ל-${chatId}`);
     } catch (e) { 
         console.error("❌ שגיאה בשליחת הודעה:", e.response?.data || e.message); 
     }
@@ -48,11 +42,14 @@ app.post('/webhook', async (req, res) => {
             const chatId = req.body.senderData.chatId;
             const senderName = req.body.senderData.senderName;
             
-            // שומר את הלקוח בזיכרון
-            await Client.findOneAndUpdate({ chatId }, { name: senderName }, { upsert: true });
+            // שומר את הלקוח בזיכרון (CRM)
+            await Client.findOneAndUpdate({ chatId }, { name: senderName, lastInteraction: new Date() }, { upsert: true });
             
-            // שולח את התפריט
-            await sendMenu(chatId);
+            console.log(`📩 התקבלה הודעה מ-${senderName}`);
+
+            // תשובה אוטומטית ראשונית (במקום כפתורים, כדי לוודא שהחיבור עובד)
+            const welcomeText = `שלום ${senderName}! 👋\nברוכים הבאים ל-TPG.\nהמערכת שלנו רשמה אותך. איך נוכל לעזור?`;
+            await sendResponse(chatId, welcomeText);
         }
     } catch (e) { 
         console.error("❌ שגיאה ב-Webhook:", e.message); 
@@ -60,7 +57,7 @@ app.post('/webhook', async (req, res) => {
     res.sendStatus(200);
 });
 
-app.get('/', (req, res) => res.send("🚀 TPG System is Online and Healthy!"));
+app.get('/', (req, res) => res.send("🚀 TPG System is Online and Connected to DB!"));
 
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => console.log(`Server is running on port ${PORT}`));
