@@ -1,7 +1,6 @@
 {
   "name": "tpg-bot",
   "version": "1.0.0",
-  "description": "TPG WhatsApp CRM",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
