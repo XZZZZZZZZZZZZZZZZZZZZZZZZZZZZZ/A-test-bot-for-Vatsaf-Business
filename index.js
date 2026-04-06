@@ -49,7 +49,7 @@ const UserSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', UserSchema);
 
-// יצירת משתמש מנהל ראשוני (או שדרוג הקיים)
+// יצירת משתמש מנהל ראשוני
 async function createAdmin() {
     await User.findOneAndUpdate(
         { username: 'M' }, 
@@ -174,19 +174,23 @@ app.post('/webhook', async (req, res) => {
 // --- הוספת משתמשים (API) ---
 // ==========================================
 app.post('/api/add_user', async (req, res) => {
-    // רק מנהל יכול להוסיף משתמשים
     if (!req.session.user || req.session.user.role !== 'admin') return res.redirect('/admin');
     
     const { new_username, new_pass, new_role } = req.body;
     
-    // בדיקה אם המשתמש כבר קיים
     const exists = await User.findOne({ username: new_username });
     if (!exists && new_username && new_pass) {
+        let role = 'agent';
+        let isPro = false;
+        
+        if (new_role === 'admin') { role = 'admin'; isPro = true; }
+        else if (new_role === 'pro') { role = 'agent'; isPro = true; }
+
         await new User({ 
             username: new_username, 
             pass: new_pass, 
-            role: new_role, 
-            isProfessional: false 
+            role: role, 
+            isProfessional: isPro 
         }).save();
     }
     res.redirect('/admin');
@@ -247,93 +251,138 @@ app.get('/admin', async (req, res) => {
             <script src="/socket.io/socket.io.js"></script>
             <style>
                 body { background-color: #f4f6f9; font-family: system-ui, sans-serif; overflow-x: hidden; }
-                .chat-box { height: 350px; overflow-y: auto; background: #e5ddd5; border-radius: 8px; padding: 15px; }
+                .chat-box { height: 450px; overflow-y: auto; background: #e5ddd5; border-radius: 8px; padding: 15px; }
                 .msg { max-width: 75%; padding: 8px 12px; border-radius: 8px; margin-bottom: 10px; clear: both; }
                 .msg.customer { background: #fff; float: right; border-top-right-radius: 0; }
                 .msg.agent { background: #dcf8c6; float: left; border-top-left-radius: 0; text-align: left; }
                 .ticket-item { cursor: pointer; transition: 0.2s; }
                 .ticket-item:hover { background-color: #f8f9fa; }
+                .nav-link { cursor: pointer; }
             </style>
         </head>
-        <body class="p-3">
-            <div class="container-fluid">
-                <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom">
-                    <h3 class="m-0 fw-bold text-primary">TPG Workspace <span class="badge bg-secondary fs-6">${user.role === 'admin' ? 'מנהל' : (user.isProfessional ? 'נציג מקצועי' : 'נציג')}</span></h3>
-                    <a href="/logout" class="btn btn-danger btn-sm fw-bold">התנתק מהמערכת 🚪</a>
+        <body>
+            <nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm mb-4">
+                <div class="container-fluid">
+                    <span class="navbar-brand fw-bold">TPG CRM</span>
+                    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                        <span class="navbar-toggler-icon"></span>
+                    </button>
+                    <div class="collapse navbar-collapse" id="navbarNav">
+                        <ul class="navbar-nav me-auto">
+                            <li class="nav-item">
+                                <a class="nav-link active fw-bold" id="nav-workspace" onclick="switchTab('workspace')">דף הבית</a>
+                            </li>
+                            ${user.role === 'admin' ? `
+                            <li class="nav-item">
+                                <a class="nav-link fw-bold" id="nav-users" onclick="switchTab('users')">ניהול משתמשים</a>
+                            </li>
+                            ` : ''}
+                        </ul>
+                        <span class="navbar-text text-white me-4">
+                            מחובר כ: <strong>${user.username}</strong> <span class="badge bg-light text-dark ms-1">${user.role === 'admin' ? 'מנהל' : (user.isProfessional ? 'צוות מקצועי' : 'נציג רגיל')}</span>
+                        </span>
+                        <a href="/logout" class="btn btn-danger btn-sm fw-bold shadow-sm">התנתק 🚪</a>
+                    </div>
                 </div>
+            </nav>
 
+            <div class="container-fluid px-4" id="page-workspace">
                 <div class="row">
-                    <div class="col-md-3 border-end">
-                        <h5 class="fw-bold">פניות פעילות</h5>
-                        <ul class="list-group" id="tickets-list">
+                    <div class="col-md-4 col-lg-3 border-end">
+                        <h5 class="fw-bold mb-3">פניות פעילות</h5>
+                        <ul class="list-group shadow-sm" id="tickets-list">
+                            ${clients.length === 0 ? '<li class="list-group-item text-muted text-center">אין פניות כרגע</li>' : ''}
                             ${clients.map(c => `
                                 <li class="list-group-item ticket-item ${c.status === 'WAITING_PRO' ? 'list-group-item-warning' : ''}" onclick="openChat('${c.chatId}', '${c.name || 'לקוח'}')">
-                                    <strong>${c.name || c.chatId.replace('@c.us','')}</strong> ${c.status === 'WAITING_PRO' ? '⭐' : ''}<br>
+                                    <strong>${c.name || c.chatId.replace('@c.us','')}</strong> ${c.status === 'WAITING_PRO' ? '⭐ (מקצועי)' : ''}<br>
                                     <small class="text-muted">${c.issue}</small>
                                 </li>
                             `).join('')}
                         </ul>
                     </div>
 
-                    <div class="col-md-6">
-                        <h5 class="fw-bold" id="chat-header">בחר פנייה כדי להתחיל</h5>
-                        <div class="chat-box border mb-2" id="chat-box"></div>
-                        <div class="input-group">
+                    <div class="col-md-8 col-lg-9">
+                        <h5 class="fw-bold" id="chat-header">בחר פנייה כדי להתחיל בשיחה</h5>
+                        <div class="chat-box border mb-3 shadow-sm" id="chat-box">
+                            <div class="text-center text-muted mt-5">התחל בבחירת לקוח מהרשימה...</div>
+                        </div>
+                        <div class="input-group shadow-sm mb-3">
                             <input type="text" id="chat-input" class="form-control" placeholder="הקלד הודעה..." disabled>
-                            <button class="btn btn-primary px-4" id="btn-send" disabled onclick="sendMessage()">שלח</button>
+                            <button class="btn btn-primary px-4 fw-bold" id="btn-send" disabled onclick="sendMessage()">שלח</button>
                         </div>
                         
-                        <div class="d-flex gap-2 mt-3">
-                            <button class="btn btn-warning flex-fill fw-bold" id="btn-transfer" disabled onclick="actionTicket('transfer_pro')">🧑‍🔧 העבר לצוות מקצועי</button>
-                            <button class="btn btn-success flex-fill fw-bold" id="btn-sale" disabled onclick="actionTicket('sale')">💰 סיום מכירה</button>
-                            <button class="btn btn-secondary flex-fill fw-bold" id="btn-close" disabled onclick="actionTicket('close')">✔️ סיום פנייה</button>
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-warning flex-fill fw-bold shadow-sm" id="btn-transfer" disabled onclick="actionTicket('transfer_pro')">🧑‍🔧 העבר לצוות מקצועי</button>
+                            <button class="btn btn-success flex-fill fw-bold shadow-sm" id="btn-sale" disabled onclick="actionTicket('sale')">💰 סיום מכירה</button>
+                            <button class="btn btn-secondary flex-fill fw-bold shadow-sm" id="btn-close" disabled onclick="actionTicket('close')">✔️ סיום פנייה</button>
                         </div>
+                    </div>
+                </div>
+            </div>
 
-                        ${user.role === 'admin' ? `
-                        <div class="mt-5 border-top pt-4">
-                            <h4 class="fw-bold text-dark mb-3">⚙️ מערכת ניהול מנהלים</h4>
-                            
-                            <div class="card p-3 mb-4 shadow-sm">
-                                <h6 class="fw-bold text-primary">➕ הוספת משתמש חדש</h6>
-                                <form action="/api/add_user" method="POST" class="d-flex gap-2 align-items-center mt-2">
+            ${user.role === 'admin' ? `
+            <div class="container-fluid px-4 d-none" id="page-users">
+                <div class="row">
+                    <div class="col-md-8 border-end pe-4">
+                        <h4 class="fw-bold text-dark mb-4">⚙️ ניהול משתמשים במערכת</h4>
+                        
+                        <div class="card p-4 mb-4 shadow-sm border-0 bg-light">
+                            <h6 class="fw-bold text-primary mb-3">➕ הוספת משתמש חדש</h6>
+                            <form action="/api/add_user" method="POST" class="row g-2 align-items-center">
+                                <div class="col-md-3">
                                     <input type="text" name="new_username" class="form-control" placeholder="שם משתמש" required>
+                                </div>
+                                <div class="col-md-3">
                                     <input type="text" name="new_pass" class="form-control" placeholder="סיסמה" required>
+                                </div>
+                                <div class="col-md-3">
                                     <select name="new_role" class="form-select">
                                         <option value="agent">נציג רגיל</option>
+                                        <option value="pro">צוות מקצועי</option>
                                         <option value="admin">מנהל</option>
                                     </select>
-                                    <button type="submit" class="btn btn-success fw-bold text-nowrap">צור משתמש</button>
-                                </form>
-                            </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <button type="submit" class="btn btn-success w-100 fw-bold">צור משתמש</button>
+                                </div>
+                            </form>
+                        </div>
 
-                            <h6 class="fw-bold">רשימת משתמשים במערכת:</h6>
-                            <table class="table table-sm table-bordered mt-2 bg-white">
-                                <thead class="table-light"><tr><th>שם משתמש</th><th>הרשאה</th><th>צוות מקצועי?</th><th>פעולות</th></tr></thead>
+                        <h6 class="fw-bold mb-3">רשימת משתמשים קיימים:</h6>
+                        <div class="table-responsive shadow-sm rounded">
+                            <table class="table table-hover table-bordered mb-0 bg-white">
+                                <thead class="table-light text-center">
+                                    <tr><th>שם משתמש</th><th>הרשאה</th><th>פעולות מהירות</th></tr>
+                                </thead>
                                 <tbody>
                                     ${allUsers.map(u => `
-                                        <tr>
-                                            <td class="align-middle fw-bold">${u.username}</td>
-                                            <td class="align-middle">${u.role === 'admin' ? '👑 מנהל' : '🎧 נציג'}</td>
-                                            <td class="align-middle">${u.isProfessional ? '✅ כן' : '❌ לא'}</td>
+                                        <tr class="align-middle text-center">
+                                            <td class="fw-bold">${u.username}</td>
                                             <td>
-                                                <button class="btn btn-sm ${u.isProfessional ? 'btn-danger' : 'btn-primary'}" onclick="togglePro('${u.username}', ${!u.isProfessional})">
-                                                    ${u.isProfessional ? 'הסר מצוות מקצועי' : 'הגדר כצוות מקצועי'}
-                                                </button>
+                                                ${u.role === 'admin' ? '👑 מנהל' : (u.isProfessional ? '⭐ צוות מקצועי' : '🎧 נציג רגיל')}
+                                            </td>
+                                            <td>
+                                                ${u.role !== 'admin' ? `
+                                                    <button class="btn btn-sm ${u.isProfessional ? 'btn-danger' : 'btn-primary'}" onclick="togglePro('${u.username}', ${!u.isProfessional})">
+                                                        ${u.isProfessional ? 'הסר מצוות מקצועי' : 'הגדר כצוות מקצועי'}
+                                                    </button>
+                                                ` : '<span class="text-muted small">מנהל ראשי</span>'}
                                             </td>
                                         </tr>
                                     `).join('')}
                                 </tbody>
                             </table>
                         </div>
-                        ` : ''}
                     </div>
 
-                    <div class="col-md-3 border-start ${user.role !== 'admin' ? 'd-none' : ''}">
-                        <h5 class="fw-bold">צוות מחובר בזמן אמת</h5>
-                        <ul class="list-group" id="online-users-list"></ul>
+                    <div class="col-md-4 ps-4">
+                        <h5 class="fw-bold mb-3">🟢 משתמשים מחוברים כעת</h5>
+                        <ul class="list-group shadow-sm" id="online-users-list">
+                            </ul>
                     </div>
                 </div>
             </div>
+            ` : ''}
 
             <script>
                 const currentUser = { username: '${user.username}', role: '${user.role}' };
@@ -342,6 +391,21 @@ app.get('/admin', async (req, res) => {
 
                 socket.on('connect', () => { socket.emit('login', currentUser); });
 
+                // מערכת הניווט בין הדפים
+                function switchTab(tabName) {
+                    document.getElementById('page-workspace').classList.add('d-none');
+                    const pageUsers = document.getElementById('page-users');
+                    if (pageUsers) pageUsers.classList.add('d-none');
+                    
+                    document.getElementById('nav-workspace').classList.remove('active');
+                    const navUsers = document.getElementById('nav-users');
+                    if (navUsers) navUsers.classList.remove('active');
+
+                    document.getElementById('page-' + tabName).classList.remove('d-none');
+                    document.getElementById('nav-' + tabName).classList.add('active');
+                }
+
+                // פונקציות צ'אט
                 function openChat(chatId, name) {
                     activeChatId = chatId;
                     document.getElementById('chat-header').innerText = "בשיחה עם: " + name;
@@ -350,7 +414,7 @@ app.get('/admin', async (req, res) => {
                     document.getElementById('btn-transfer').disabled = false;
                     document.getElementById('btn-sale').disabled = false;
                     document.getElementById('btn-close').disabled = false;
-                    document.getElementById('chat-box').innerHTML = '<div class="text-center text-muted mt-5">שיחה פעילה...</div>';
+                    document.getElementById('chat-box').innerHTML = '<div class="text-center text-muted mt-5">שיחה פעילה... היסטוריית ההתכתבות תופיע פה עם שליחת הודעות.</div>';
                 }
 
                 function sendMessage() {
@@ -379,11 +443,12 @@ app.get('/admin', async (req, res) => {
                     }
                 }
 
+                // אירועי סוקט (עדכונים בזמן אמת)
                 socket.on('chat_updated', (data) => {
                     if(data.chatId === activeChatId) {
                         const chatBox = document.getElementById('chat-box');
                         const isAgent = data.message.sender !== 'customer';
-                        chatBox.innerHTML += \`<div class="msg \${isAgent ? 'agent' : 'customer'}">
+                        chatBox.innerHTML += \`<div class="msg \${isAgent ? 'agent' : 'customer'} shadow-sm">
                             <strong>\${isAgent ? 'אני' : 'לקוח'}:</strong> \${data.message.text}
                         </div>\`;
                         chatBox.scrollTop = chatBox.scrollHeight;
@@ -393,19 +458,25 @@ app.get('/admin', async (req, res) => {
                 socket.on('ticket_closed', () => location.reload());
                 socket.on('new_ticket', () => location.reload()); 
 
+                // רשימת נוכחות של המנהל
                 socket.on('presence_updated', (users) => {
                     if(currentUser.role !== 'admin') return;
                     const list = document.getElementById('online-users-list');
-                    list.innerHTML = users.map(u => \`
-                        <li class="list-group-item d-flex justify-content-between align-items-center">
-                            \${u.username}
-                            \${u.username !== currentUser.username ? \`<button class="btn btn-sm btn-outline-danger" onclick="kickUser('\${u.socketId}')">נתק</button>\` : ''}
-                        </li>
-                    \`).join('');
+                    if (list) {
+                        list.innerHTML = users.map(u => \`
+                            <li class="list-group-item d-flex justify-content-between align-items-center">
+                                <div>
+                                    <strong>\${u.username}</strong>
+                                    <br><small class="text-muted">\${u.role === 'admin' ? 'מנהל' : 'נציג'}</small>
+                                </div>
+                                \${u.username !== currentUser.username ? \`<button class="btn btn-sm btn-outline-danger" onclick="kickUser('\${u.socketId}')">נתק</button>\` : '<span class="badge bg-success">אתה</span>'}
+                            </li>
+                        \`).join('');
+                    }
                 });
 
                 function kickUser(socketId) {
-                    if(confirm("לנתק משתמש זה בכוח?")) socket.emit('force_logout', socketId);
+                    if(confirm("לנתק משתמש זה מהמערכת בכוח?")) socket.emit('force_logout', socketId);
                 }
 
                 socket.on('kicked_out', (reason) => {
