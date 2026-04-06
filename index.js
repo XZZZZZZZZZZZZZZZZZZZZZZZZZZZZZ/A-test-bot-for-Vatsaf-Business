@@ -125,12 +125,19 @@ io.on('connection', (socket) => {
 // ==========================================
 app.post('/webhook', async (req, res) => {
     const body = req.body;
+    
+    // --- לוגים לדיבוג ---
+    console.log("--- Webhook Triggered ---");
+    console.log("Type:", body.typeWebhook);
+
     if (body.typeWebhook !== 'incomingMessageReceived') return res.sendStatus(200);
 
     const chatId = body.senderData?.chatId;
     if (!chatId) return res.sendStatus(200);
 
     let text = (body.messageData?.textMessageData?.textMessage || body.messageData?.extendedTextMessageData?.text || "").trim();
+    console.log(`📩 Message from ${chatId}: ${text}`);
+
     if (!text) return res.sendStatus(200);
 
     let client = await Client.findOne({ chatId }) || new Client({ chatId });
@@ -138,6 +145,7 @@ app.post('/webhook', async (req, res) => {
 
     // אם הלקוח כבר בטיפול של נציג ב-CRM, רק מעדכנים הודעות ולא מפעילים בוט
     if (client.status === 'WAITING' || client.status === 'WAITING_PRO' || client.status === 'IN_CHAT') {
+        console.log("Client in active chat, skipping bot flow.");
         await client.save();
         io.emit('chat_updated', { chatId, message: { sender: 'customer', text, timestamp: new Date() } });
         return res.sendStatus(200);
@@ -170,6 +178,7 @@ app.post('/webhook', async (req, res) => {
     }
 
     await client.save();
+    console.log("Client flow saved successfully.");
     res.sendStatus(200);
 });
 
@@ -269,10 +278,10 @@ app.get('/admin', async (req, res) => {
                     <div class="collapse navbar-collapse" id="navbarNav">
                         <ul class="navbar-nav me-auto">
                             <li class="nav-item"><a class="nav-link active fw-bold" id="nav-workspace" onclick="switchTab('workspace')">דף הבית</a></li>
-                            ${user.role === 'admin' ? `<li class="nav-item"><a class="nav-link fw-bold" id="nav-users" onclick="switchTab('users')">ניהול משתמשים</a></li>` : ''}
+                            \${user.role === 'admin' ? \`<li class="nav-item"><a class="nav-link fw-bold" id="nav-users" onclick="switchTab('users')">ניהול משתמשים</a></li>\` : ''}
                         </ul>
                         <span class="navbar-text text-white me-4">
-                            מחובר/ת: <strong>${user.username}</strong> <span class="badge bg-light text-dark ms-1">${user.role === 'admin' ? 'מנהל' : (user.isProfessional ? 'צוות מקצועי' : 'נציג רגיל')}</span>
+                            מחובר/ת: <strong>\${user.username}</strong> <span class="badge bg-light text-dark ms-1">\${user.role === 'admin' ? 'מנהל' : (user.isProfessional ? 'צוות מקצועי' : 'נציג רגיל')}</span>
                         </span>
                         <a href="/logout" class="btn btn-danger btn-sm fw-bold shadow-sm">התנתק 🚪</a>
                     </div>
@@ -284,15 +293,15 @@ app.get('/admin', async (req, res) => {
                     <div class="col-md-4 col-lg-3 border-end">
                         <h5 class="fw-bold mb-3">פניות פעילות</h5>
                         <div id="tickets-list" class="d-flex flex-column gap-3 pb-3">
-                            ${clients.length === 0 ? '<div class="text-muted text-center mt-3">אין פניות כרגע</div>' : ''}
-                            ${clients.map(c => `
-                                <div class="card ticket-item shadow-sm bg-white ${c.status === 'WAITING_PRO' ? 'ticket-pro' : ''}" onclick="openChat('${c.chatId}', '${c.name || 'לקוח'}')">
+                            \${clients.length === 0 ? '<div class="text-muted text-center mt-3">אין פניות כרגע</div>' : ''}
+                            \${clients.map(c => \`
+                                <div class="card ticket-item shadow-sm bg-white \${c.status === 'WAITING_PRO' ? 'ticket-pro' : ''}" onclick="openChat('\${c.chatId}', '\${c.name || 'לקוח'}')">
                                     <div class="card-body p-3">
-                                        <h6 class="fw-bold mb-1 text-primary">${c.name || c.chatId.replace('@c.us','')} ${c.status === 'WAITING_PRO' ? '⭐' : ''}</h6>
-                                        <p class="text-muted mb-0 small text-truncate" style="max-height: 2.5em; overflow: hidden;">${c.issue || 'ללא פירוט'}</p>
+                                        <h6 class="fw-bold mb-1 text-primary">\${c.name || c.chatId.replace('@c.us','')} \${c.status === 'WAITING_PRO' ? '⭐' : ''}</h6>
+                                        <p class="text-muted mb-0 small text-truncate" style="max-height: 2.5em; overflow: hidden;">\${c.issue || 'ללא פירוט'}</p>
                                     </div>
                                 </div>
-                            `).join('')}
+                            \`).join('')}
                         </div>
                     </div>
 
@@ -315,7 +324,7 @@ app.get('/admin', async (req, res) => {
                 </div>
             </div>
 
-            ${user.role === 'admin' ? `
+            \${user.role === 'admin' ? \`
             <div class="container-fluid px-4 d-none" id="page-users">
                 <div class="row">
                     <div class="col-md-8 border-end pe-4">
@@ -339,15 +348,15 @@ app.get('/admin', async (req, res) => {
                             <table class="table table-hover table-bordered mb-0 bg-white">
                                 <thead class="table-light text-center"><tr><th>שם משתמש</th><th>הרשאה</th><th>פעולות מהירות</th></tr></thead>
                                 <tbody>
-                                    ${allUsers.map(u => `
+                                    \${allUsers.map(u => \`
                                         <tr class="align-middle text-center">
-                                            <td class="fw-bold">${u.username}</td>
-                                            <td>${u.role === 'admin' ? '👑 מנהל' : (u.isProfessional ? '⭐ צוות מקצועי' : '🎧 נציג רגיל')}</td>
+                                            <td class="fw-bold">\${u.username}</td>
+                                            <td>\${u.role === 'admin' ? '👑 מנהל' : (u.isProfessional ? '⭐ צוות מקצועי' : '🎧 נציג רגיל')}</td>
                                             <td>
-                                                ${u.role !== 'admin' ? `<button class="btn btn-sm ${u.isProfessional ? 'btn-danger' : 'btn-primary'}" onclick="togglePro('${u.username}', ${!u.isProfessional})">${u.isProfessional ? 'הסר מצוות מקצועי' : 'הגדר כצוות מקצועי'}</button>` : '<span class="text-muted small">מנהל ראשי</span>'}
+                                                \${u.role !== 'admin' ? \`<button class="btn btn-sm \${u.isProfessional ? 'btn-danger' : 'btn-primary'}" onclick="togglePro('\${u.username}', \${!u.isProfessional})">\${u.isProfessional ? 'הסר מצוות מקצועי' : 'הגדר כצוות מקצועי'}</button>\` : '<span class="text-muted small">מנהל ראשי</span>'}
                                             </td>
                                         </tr>
-                                    `).join('')}
+                                    \`).join('')}
                                 </tbody>
                             </table>
                         </div>
@@ -359,10 +368,10 @@ app.get('/admin', async (req, res) => {
                     </div>
                 </div>
             </div>
-            ` : ''}
+            \` : ''}
 
             <script>
-                const currentUser = { username: '${user.username}', role: '${user.role}' };
+                const currentUser = { username: '\${user.username}', role: '\${user.role}' };
                 const socket = io();
                 let activeChatId = null;
 
@@ -483,4 +492,4 @@ app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/dashboa
 
 // --- הפעלת שרת ---
 const PORT = process.env.PORT || 8000;
-server.listen(PORT, () => console.log(`🚀 TPG System (CRM Only) ready on port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 TPG System (CRM Only) ready on port \${PORT}`));
