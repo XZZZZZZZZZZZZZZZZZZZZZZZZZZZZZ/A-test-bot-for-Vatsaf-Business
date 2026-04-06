@@ -5,6 +5,7 @@ const { Server } = require('socket.io');
 const axios = require('axios');
 const mongoose = require('mongoose');
 const session = require('express-session');
+const { google } = require('googleapis'); // <-- התוספת החדשה שלנו לגוגל
 
 const app = express();
 const server = http.createServer(app); 
@@ -492,6 +493,54 @@ app.get('/admin', async (req, res) => {
 
 app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/dashboard'); });
 
+// ==========================================
+// --- פה מתחיל אנשי קשר (Google Contacts) ---
+// ==========================================
+
+const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_REDIRECT_URI
+);
+
+// נתיב ההתחברות לגוגל - דרכו אנחנו נאשר את החשבון פעם אחת
+app.get('/auth/google', (req, res) => {
+    const url = oauth2Client.generateAuthUrl({
+        access_type: 'offline', 
+        scope: ['https://www.googleapis.com/auth/contacts'] 
+    });
+    res.redirect(url);
+});
+
+// שוטר התנועה - הנתיב שאליו גוגל מחזירה אותנו עם הקוד הסודי
+app.get('/auth/google/callback', async (req, res) => {
+    const code = req.query.code;
+    try {
+        // החלפת הקוד מהכתובת במפתחות הגישה האמיתיים
+        const { tokens } = await oauth2Client.getToken(code);
+        oauth2Client.setCredentials(tokens);
+        
+        // כאן בעתיד נוסיף את הלוגיקה שקוראת ושומרת את אנשי הקשר
+        // בינתיים אנחנו רק מציגים מסך הצלחה כדי לוודא שהחיבור הראשוני עובד
+        
+        res.send(`
+            <html lang="he" dir="rtl">
+            <head><meta charset="UTF-8"><title>חיבור הצליח</title></head>
+            <body style="text-align: center; font-family: sans-serif; background-color: #f0f2f5; padding-top: 50px;">
+                <div style="background: white; max-width: 500px; margin: 0 auto; padding: 30px; border-radius: 15px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
+                    <h1 style="color: #28a745;">✅ החיבור לגוגל בוצע בהצלחה!</h1>
+                    <p style="font-size: 18px; color: #555;">המערכת קיבלה הרשאות ומקושרת כעת לאנשי הקשר של גוגל.</p>
+                    <p style="color: #777;">אפשר לסגור את החלון הזה ולחזור לעבוד במערכת ה-CRM.</p>
+                </div>
+            </body>
+            </html>
+        `);
+    } catch (error) {
+        console.error('Error in Google Callback:', error);
+        res.status(500).send('❌ שגיאה באימות מול גוגל - בדוק את משתני הסביבה ב-Koyeb');
+    }
+});
+
 // --- הפעלת שרת ---
 const PORT = process.env.PORT || 8000;
-server.listen(PORT, () => console.log(`🚀 TPG System (Bot + Realtime CRM) ready on port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 TPG System (Bot + Realtime CRM + Google Sync) ready on port ${PORT}`));
