@@ -56,28 +56,25 @@ async function createAdmin() {
     );
 }
 
-// --- פונקציית שליחה עם "מכת חשמל" ללוגים ---
+// --- פונקציית שליחה עם לוגים מפורטים ---
 async function sendWAMessage(chatId, message) {
     if (!INSTANCE_ID || !API_TOKEN) {
-        console.log(`❌ שגיאה: חסר INSTANCE_ID או API_TOKEN במשתני הסביבה!`);
+        console.log(`❌ שגיאה: חסר INSTANCE_ID או API_TOKEN!`);
         return;
     }
     const url = `${GREEN_API_HOST}/waInstance${INSTANCE_ID}/sendMessage/${API_TOKEN}`;
-    
     console.log(`🚀 מנסה לשלוח הודעה ל-${chatId}...`);
 
     try {
         const response = await axios.post(url, { chatId, message });
-        console.log(`✅ הודעה נשלחה בהצלחה! מזהה הודעה: ${response.data.idMessage}`);
+        console.log(`✅ הודעה נשלחה! מזהה: ${response.data.idMessage}`);
     } catch (e) {
-        console.log("❌ שגיאת שליחה מפורטת מהשרת של Green API:");
+        console.log("❌ שגיאת שליחה מפורטת:");
         if (e.response) {
-            console.log("סטטוס שגיאה:", e.response.status);
-            console.log("פירוט שגיאה מהשרת:", JSON.stringify(e.response.data));
-            if (e.response.status === 401) console.log("💡 טיפ: נראה שה-API_TOKEN או ה-INSTANCE_ID לא נכונים.");
-            if (e.response.status === 466) console.log("💡 טיפ: חסר קרדיט בחשבון ה-Green API או שהמכשיר מנותק.");
+            console.log("Status:", e.response.status);
+            console.log("Data:", JSON.stringify(e.response.data));
         } else {
-            console.log("הודעת שגיאה כללית:", e.message);
+            console.log("Error:", e.message);
         }
     }
 }
@@ -138,11 +135,10 @@ io.on('connection', (socket) => {
 });
 
 // ==========================================
-// --- Webhook: הבוט של וואטסאפ (הזרימה המקורית של TPG) ---
+// --- Webhook: הבוט של וואטסאפ ---
 // ==========================================
 app.post('/webhook', async (req, res) => {
     const body = req.body;
-    
     console.log("--- Webhook Triggered ---");
     console.log("Type:", body.typeWebhook);
 
@@ -152,55 +148,49 @@ app.post('/webhook', async (req, res) => {
     if (!chatId) return res.sendStatus(200);
 
     let text = (body.messageData?.textMessageData?.textMessage || body.messageData?.extendedTextMessageData?.text || "").trim();
-    console.log(`📩 הודעה חדשה מ-${chatId}: "${text}"`);
+    console.log(`📩 Message from ${chatId}: ${text}`);
 
     if (!text) return res.sendStatus(200);
 
-    try {
-        let client = await Client.findOne({ chatId }) || new Client({ chatId });
-        client.messages.push({ sender: 'customer', text });
+    let client = await Client.findOne({ chatId }) || new Client({ chatId });
+    client.messages.push({ sender: 'customer', text });
 
-        if (client.status === 'WAITING' || client.status === 'WAITING_PRO' || client.status === 'IN_CHAT') {
-            console.log("🔄 לקוח בשיחה פעילה, מעדכן CRM בלבד.");
-            await client.save();
-            io.emit('chat_updated', { chatId, message: { sender: 'customer', text, timestamp: new Date() } });
-            return res.sendStatus(200);
-        }
-
-        if (client.status === 'START' || text === "חזור") {
-            const msg = `*ברוכים הבאים ל-TPG - המומחים לאוטומציות ובוטים!* 🚀🤖\n\nאיך נוכל לעזור היום? (אנא השב/י עם מספר):\n\n*1️⃣* ℹ️ מידע על המערכות שלנו\n*2️⃣* 🗣️ שיחה עם נציג אנושי`;
-            await sendWAMessage(chatId, msg);
-            client.status = 'MENU';
-        } else if (client.status === 'MENU') {
-            if (text === "1") {
-                await sendWAMessage(chatId, "אנחנו ב-TPG מתמחים בבניית בוטים חכמים, מערכות CRM ואוטומציות שמייעלות את העסק שלך! 💡📈\n\nלמעבר לשיחה עם נציג הקישו *2*.\nלחזרה לתפריט הראשי שלחו *חזור* 🔙.");
-            }
-            else if (text === "2") { 
-                await sendWAMessage(chatId, "בשמחה רבה! 😊 איך קוראים לך כדי שנוכל לתת שירות אישי?"); 
-                client.status = 'ASK_NAME'; 
-            }
-            else {
-                await sendWAMessage(chatId, "אופס, לא הבנתי את הבחירה 😅\nאנא בחר/י *1* או *2* מהתפריט. לחזרה, אפשר פשוט לכתוב *חזור*.");
-            }
-        } else if (client.status === 'ASK_NAME') {
-            client.name = text;
-            await sendWAMessage(chatId, `נעים מאוד ${text}! 👋 כדי שנוכל לעזור בצורה הטובה ביותר, מה מהות הפנייה שלך אלינו היום? (בכמה מילים ✍️)`);
-            client.status = 'ASK_ISSUE';
-        } else if (client.status === 'ASK_ISSUE') {
-            client.issue = text;
-            client.status = 'WAITING';
-            await sendWAMessage(chatId, "תודה רבה! 🙏 הפנייה נרשמה והועברה לצוות המומחים שלנו. נציג יחזור אליך ממש בקרוב. בינתיים, שיהיה המשך יום מצוין! 🌟");
-            io.emit('new_ticket', client);
-        }
-
+    if (client.status === 'WAITING' || client.status === 'WAITING_PRO' || client.status === 'IN_CHAT') {
+        console.log("Client in active chat, updating CRM only.");
         await client.save();
-        console.log("✅ הטיפול בהודעה הסתיים והנתונים נשמרו.");
-        res.sendStatus(200);
-
-    } catch (error) {
-        console.log("❌ שגיאה פנימית בעיבוד הודעה:", error.message);
-        res.sendStatus(500);
+        io.emit('chat_updated', { chatId, message: { sender: 'customer', text, timestamp: new Date() } });
+        return res.sendStatus(200);
     }
+
+    if (client.status === 'START' || text === "חזור") {
+        const msg = `*ברוכים הבאים ל-TPG - המומחים לאוטומציות ובוטים!* 🚀🤖\n\nאיך נוכל לעזור היום? (אנא השב/י עם מספר):\n\n*1️⃣* ℹ️ מידע על המערכות שלנו\n*2️⃣* 🗣️ שיחה עם נציג אנושי`;
+        await sendWAMessage(chatId, msg);
+        client.status = 'MENU';
+    } else if (client.status === 'MENU') {
+        if (text === "1") {
+            await sendWAMessage(chatId, "אנחנו ב-TPG מתמחים בבניית בוטים חכמים, מערכות CRM ואוטומציות שמייעלות את העסק שלך! 💡📈\n\nלמעבר לשיחה עם נציג הקישו *2*.\nלחזרה לתפריט הראשי שלחו *חזור* 🔙.");
+        }
+        else if (text === "2") { 
+            await sendWAMessage(chatId, "בשמחה רבה! 😊 איך קוראים לך כדי שנוכל לתת שירות אישי?"); 
+            client.status = 'ASK_NAME'; 
+        }
+        else {
+            await sendWAMessage(chatId, "אופס, לא הבנתי את הבחירה 😅\nאנא בחר/י *1* או *2* מהתפריט. לחזרה, אפשר פשוט לכתוב *חזור*.");
+        }
+    } else if (client.status === 'ASK_NAME') {
+        client.name = text;
+        await sendWAMessage(chatId, `נעים מאוד ${text}! 👋 כדי שנוכל לעזור בצורה הטובה ביותר, מה מהות הפנייה שלך אלינו היום? (בכמה מילים ✍️)`);
+        client.status = 'ASK_ISSUE';
+    } else if (client.status === 'ASK_ISSUE') {
+        client.issue = text;
+        client.status = 'WAITING';
+        await sendWAMessage(chatId, "תודה רבה! 🙏 הפנייה נרשמה והועברה לצוות המומחים שלנו. נציג יחזור אליך ממש בקרוב. בינתיים, שיהיה המשך יום מצוין! 🌟");
+        io.emit('new_ticket', client);
+    }
+
+    await client.save();
+    console.log("Client flow saved successfully.");
+    res.sendStatus(200);
 });
 
 // ==========================================
@@ -424,18 +414,18 @@ app.get('/admin', async (req, res) => {
                         const data = await res.json();
                         let html = '';
                         if (data.name || data.issue) {
-                            html += \\\`<div class="bot-summary shadow-sm">
+                            html += \`<div class="bot-summary shadow-sm">
                                 <strong>🤖 נתונים מהבוט:</strong><br>
-                                <span class="text-muted">שם:</span> \\\${data.name || 'לא צוין'}<br>
-                                <span class="text-muted">פנייה:</span> \\\${data.issue || 'לא צוין'}
-                            </div>\\\`;
+                                <span class="text-muted">שם:</span> \${data.name || 'לא צוין'}<br>
+                                <span class="text-muted">פנייה:</span> \${data.issue || 'לא צוין'}
+                            </div>\`;
                         }
                         data.messages.forEach(msg => {
                             const isAgent = msg.sender !== 'customer';
                             const senderName = isAgent ? msg.sender : 'לקוח';
-                            html += \\\`<div class="msg \\\${isAgent ? 'agent' : 'customer'} shadow-sm">
-                                <strong>\\\${senderName}:</strong> \\\${msg.text}
-                            </div>\\\`;
+                            html += \`<div class="msg \${isAgent ? 'agent' : 'customer'} shadow-sm">
+                                <strong>\${senderName}:</strong> \${msg.text}
+                            </div>\`;
                         });
                         chatBox.innerHTML = html || '<div class="text-center text-muted mt-5">אין היסטוריית הודעות.</div>';
                         chatBox.scrollTop = chatBox.scrollHeight;
@@ -473,9 +463,9 @@ app.get('/admin', async (req, res) => {
                     if(data.chatId === activeChatId) {
                         const chatBox = document.getElementById('chat-box');
                         const isAgent = data.message.sender !== 'customer';
-                        chatBox.innerHTML += \\\`<div class="msg \\\${isAgent ? 'agent' : 'customer'} shadow-sm">
-                            <strong>\\\${isAgent ? 'אני' : 'לקוח'}:</strong> \\\${data.message.text}
-                        </div>\\\`;
+                        chatBox.innerHTML += \`<div class="msg \${isAgent ? 'agent' : 'customer'} shadow-sm">
+                            <strong>\${isAgent ? 'אני' : 'לקוח'}:</strong> \${data.message.text}
+                        </div>\`;
                         chatBox.scrollTop = chatBox.scrollHeight;
                     }
                 });
@@ -487,12 +477,12 @@ app.get('/admin', async (req, res) => {
                     if(currentUser.role !== 'admin') return;
                     const list = document.getElementById('online-users-list');
                     if (list) {
-                        list.innerHTML = users.map(u => \\\`
+                        list.innerHTML = users.map(u => \`
                             <li class="list-group-item d-flex justify-content-between align-items-center">
-                                <div><strong>\\\${u.username}</strong><br><small class="text-muted">\\\${u.role === 'admin' ? 'מנהל' : 'נציג'}</small></div>
-                                \\\${u.username !== currentUser.username ? \\\`<button class="btn btn-sm btn-outline-danger" onclick="kickUser('\\' + u.socketId + '\\')">נתק</button>\\\` : '<span class="badge bg-success">אתה</span>'}
+                                <div><strong>\${u.username}</strong><br><small class="text-muted">\${u.role === 'admin' ? 'מנהל' : 'נציג'}</small></div>
+                                \${u.username !== currentUser.username ? \`<button class="btn btn-sm btn-outline-danger" onclick="kickUser('\${u.socketId}')">נתק</button>\` : '<span class="badge bg-success">אתה</span>'}
                             </li>
-                        \\\`).join('');
+                        \`).join('');
                     }
                 });
 
