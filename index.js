@@ -5,7 +5,6 @@ const { Server } = require('socket.io');
 const axios = require('axios');
 const mongoose = require('mongoose');
 const session = require('express-session');
-const { google } = require('googleapis');
 
 const app = express();
 const server = http.createServer(app); 
@@ -20,28 +19,14 @@ app.use(session({
     saveUninitialized: true 
 }));
 
-const { INSTANCE_ID, API_TOKEN, MONGODB_URI, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI } = process.env;
+const { INSTANCE_ID, API_TOKEN, MONGODB_URI } = process.env;
 const GREEN_API_HOST = 'https://api.green-api.com'; 
-
-// --- הגדרת גוגל OAuth ---
-const oauth2Client = new google.auth.OAuth2(
-    GOOGLE_CLIENT_ID,
-    GOOGLE_CLIENT_SECRET,
-    GOOGLE_REDIRECT_URI
-);
 
 // --- חיבור למסד הנתונים MongoDB ---
 mongoose.connect(MONGODB_URI || 'mongodb://localhost:27017/tpg_crm')
-    .then(async () => {
+    .then(() => {
         console.log('✅ TPG CRM DB Active');
         createAdmin(); 
-        
-        // טעינת ההרשאה של גוגל מהמסד
-        const authData = await System.findOne({ key: 'google_auth' });
-        if (authData && authData.tokens) {
-            oauth2Client.setCredentials(authData.tokens);
-            console.log('✅ מפתחות גוגל נטענו בהצלחה למערכת');
-        }
     })
     .catch(err => console.log('❌ DB Connection Error:', err));
 
@@ -62,12 +47,6 @@ const UserSchema = new mongoose.Schema({
     isProfessional: { type: Boolean, default: false }
 });
 const User = mongoose.model('User', UserSchema);
-
-const SystemSchema = new mongoose.Schema({
-    key: String,
-    tokens: Object
-});
-const System = mongoose.model('System', SystemSchema);
 
 async function createAdmin() {
     await User.findOneAndUpdate(
@@ -142,7 +121,7 @@ io.on('connection', (socket) => {
 });
 
 // ==========================================
-// --- Webhook: הבוט של וואטסאפ (הזרימה החדשה) ---
+// --- Webhook: הבוט של וואטסאפ (הזרימה המקורית של TPG) ---
 // ==========================================
 app.post('/webhook', async (req, res) => {
     const body = req.body;
@@ -164,80 +143,34 @@ app.post('/webhook', async (req, res) => {
         return res.sendStatus(200);
     }
 
-    // --- הזרימה המדויקת שביקשת ---
-    if (client.status === 'START') {
-        // שלב 1: לקוח שלח משהו ראשון ("אשמח לצפות בסטטוס") -> הבוט עונה
-        await sendWAMessage(chatId, "מה השם?");
-        client.status = 'WAITING_FOR_NAME';
-        
-    } else if (client.status === 'WAITING_FOR_NAME') {
-        // שלב 2: הלקוח ענה את השם שלו -> שומרים בגוגל
-        const clientName = text;
-        const phoneNumber = "+" + chatId.replace('@c.us', ''); 
-
-        try {
-            if (oauth2Client.credentials && oauth2Client.credentials.access_token) {
-                const people = google.people({ version: 'v1', auth: oauth2Client });
-                await people.people.createContact({
-                    requestBody: {
-                        names: [{ givenName: clientName, familyName: "(מהוואטסאפ)" }],
-                        phoneNumbers: [{ value: phoneNumber }]
-                    }
-                });
-                console.log(`✅ איש קשר נוצר בגוגל: ${clientName} (${phoneNumber})`);
-            } else {
-                console.log("⚠️ המערכת לא מחוברת לגוגל עדיין, מדלג על שמירה.");
-            }
-        } catch (err) {
-            console.error('❌ שגיאה ביצירת איש קשר בגוגל:', err.message);
+    if (client.status === 'START' || text === "חזור") {
+        const msg = `*ברוכים הבאים ל-TPG - המומחים לאוטומציות ובוטים!* 🚀🤖\n\nאיך נוכל לעזור היום? (אנא השב/י עם מספר):\n\n*1️⃣* ℹ️ מידע על המערכות שלנו\n*2️⃣* 🗣️ שיחה עם נציג אנושי`;
+        await sendWAMessage(chatId, msg);
+        client.status = 'MENU';
+    } else if (client.status === 'MENU') {
+        if (text === "1") {
+            await sendWAMessage(chatId, "אנחנו ב-TPG מתמחים בבניית בוטים חכמים, מערכות CRM ואוטומציות שמייעלות את העסק שלך! 💡📈\n\nלמעבר לשיחה עם נציג הקישו *2*.\nלחזרה לתפריט הראשי שלחו *חזור* 🔙.");
         }
-
-        // עונים ללקוח
-        await sendWAMessage(chatId, "נשמרת");
-        
-        // מעבירים אותו לסטטוס המתנה כדי שיופיע לך גם ב-CRM אם תרצה לראות אותו!
-        client.name = clientName;
+        else if (text === "2") { 
+            await sendWAMessage(chatId, "בשמחה רבה! 😊 איך קוראים לך כדי שנוכל לתת שירות אישי?"); 
+            client.status = 'ASK_NAME'; 
+        }
+        else {
+            await sendWAMessage(chatId, "אופס, לא הבנתי את הבחירה 😅\nאנא בחר/י *1* או *2* מהתפריט. לחזרה, אפשר פשוט לכתוב *חזור*.");
+        }
+    } else if (client.status === 'ASK_NAME') {
+        client.name = text;
+        await sendWAMessage(chatId, `נעים מאוד ${text}! 👋 כדי שנוכל לעזור בצורה הטובה ביותר, מה מהות הפנייה שלך אלינו היום? (בכמה מילים ✍️)`);
+        client.status = 'ASK_ISSUE';
+    } else if (client.status === 'ASK_ISSUE') {
+        client.issue = text;
         client.status = 'WAITING';
+        await sendWAMessage(chatId, "תודה רבה! 🙏 הפנייה נרשמה והועברה לצוות המומחים שלנו. נציג יחזור אליך ממש בקרוב. בינתיים, שיהיה המשך יום מצוין! 🌟");
         io.emit('new_ticket', client);
     }
 
     await client.save();
     res.sendStatus(200);
-});
-
-// ==========================================
-// --- נתיבי התחברות לגוגל (סמויים, ללא כפתור בדשבורד) ---
-// ==========================================
-app.get('/auth/google', (req, res) => {
-    const url = oauth2Client.generateAuthUrl({
-        access_type: 'offline', 
-        prompt: 'consent',
-        scope: ['https://www.googleapis.com/auth/contacts'] 
-    });
-    res.redirect(url);
-});
-
-app.get('/auth/google/callback', async (req, res) => {
-    try {
-        const { tokens } = await oauth2Client.getToken(req.query.code);
-        oauth2Client.setCredentials(tokens);
-        await System.findOneAndUpdate({ key: 'google_auth' }, { tokens: tokens }, { upsert: true });
-        
-        res.send(`
-            <html lang="he" dir="rtl">
-            <head><meta charset="UTF-8"><title>TPG - חיבור הצליח</title></head>
-            <body style="text-align: center; font-family: sans-serif; background-color: #f0f2f5; padding-top: 50px;">
-                <div style="background: white; max-width: 500px; margin: 0 auto; padding: 30px; border-radius: 15px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
-                    <h1 style="color: #28a745;">✅ החיבור לגוגל בוצע בהצלחה!</h1>
-                    <p style="font-size: 18px; color: #555;">הבוט מוכן ומקושר כעת לאנשי הקשר של גוגל.</p>
-                </div>
-            </body>
-            </html>
-        `);
-    } catch (error) {
-        console.error('Error in Google Callback:', error);
-        res.status(500).send('❌ שגיאה באימות מול גוגל');
-    }
 });
 
 // ==========================================
@@ -550,4 +483,4 @@ app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/dashboa
 
 // --- הפעלת שרת ---
 const PORT = process.env.PORT || 8000;
-server.listen(PORT, () => console.log(`🚀 TPG System (CRM + Contacts Bot) ready on port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 TPG System (CRM Only) ready on port ${PORT}`));
