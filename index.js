@@ -19,7 +19,7 @@ app.use(session({
     saveUninitialized: true 
 }));
 
-// משתני סביבה מ-Koyeb
+// משתני סביבה
 const { INSTANCE_ID, API_TOKEN, MONGODB_URI } = process.env;
 const GREEN_API_HOST = 'https://api.green-api.com'; 
 
@@ -36,7 +36,7 @@ const ClientSchema = new mongoose.Schema({
     chatId: String,
     name: String,
     issue: String,
-    status: { type: String, default: 'START' }, 
+    status: { type: String, default: 'START' }, // סטטוסים: START, MENU, WAITING, WAITING_PRO, IN_CHAT
     messages: [{ sender: String, text: String, timestamp: { type: Date, default: Date.now } }] 
 });
 const Client = mongoose.model('Client', ClientSchema);
@@ -49,22 +49,17 @@ const UserSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', UserSchema);
 
-// יצירת משתמש מנהל (או עדכון ההרשאות שלו למנהל אם הוא כבר קיים)
+// יצירת משתמש מנהל ראשוני (או עדכון הרשאות)
 async function createAdmin() {
-    // הפונקציה הזו מוצאת את M, מעדכנת אותו למנהל, ואם הוא לא קיים - יוצרת אותו מאפס
     await User.findOneAndUpdate(
         { username: 'M' }, 
         { pass: '1', role: 'admin', isProfessional: true },
         { upsert: true, new: true }
     );
-    
-    // יצירת נציג בדיקות (רק אם לא קיים)
     const agentExists = await User.findOne({ username: 'Agent1' });
     if (!agentExists) {
         await new User({ username: 'Agent1', pass: '1', role: 'agent', isProfessional: false }).save(); 
     }
-    
-    console.log("👤 Admin user 'M' role is verified as ADMIN.");
 }
 
 // --- פונקציית שליחת הודעת טקסט לוואטסאפ ---
@@ -91,25 +86,39 @@ io.on('connection', (socket) => {
 
     socket.on('agent_send_message', async (data) => {
         const { chatId, text, agentName } = data;
-        
         await sendWAMessage(chatId, text);
-        
         await Client.findOneAndUpdate(
             { chatId },
-            { 
-                $push: { messages: { sender: agentName, text } },
-                $set: { status: 'IN_CHAT' } 
-            },
+            { $push: { messages: { sender: agentName, text } }, $set: { status: 'IN_CHAT' } },
             { new: true }
         );
-        
         io.emit('chat_updated', { chatId, message: { sender: agentName, text, timestamp: new Date() } });
     });
 
-    socket.on('close_ticket', async (chatId) => {
-        await Client.updateOne({ chatId }, { status: 'START' });
-        await sendWAMessage(chatId, "הפנייה נסגרה על ידי הנציג. לעזרה נוספת, שלחו הודעה חדשה ויפתח מענה אוטומטי.");
-        io.emit('ticket_closed', chatId);
+    // כפתורי הפעולות החדשים
+    socket.on('action_ticket', async (data) => {
+        const { chatId, action } = data;
+        
+        if (action === 'close') {
+            await Client.updateOne({ chatId }, { status: 'START' });
+            await sendWAMessage(chatId, "הפנייה נסגרה. לעזרה נוספת, שלחו הודעה חדשה ויפתח מענה אוטומטי.");
+        } 
+        else if (action === 'sale') {
+            await Client.updateOne({ chatId }, { status: 'START' });
+            await sendWAMessage(chatId, "תודה שרכשת דרכנו ב-TPG! נשמח לראותך שוב.");
+        }
+        else if (action === 'transfer_pro') {
+            await Client.updateOne({ chatId }, { status: 'WAITING_PRO' });
+            await sendWAMessage(chatId, "פנייתך הועברה לצוות המקצועי שלנו, נציג בכיר יתפנה אליך בהקדם.");
+        }
+        
+        io.emit('ticket_closed', chatId); // מרענן את המסכים של כולם
+    });
+
+    // שינוי הרשאות צוות מקצועי על ידי מנהל
+    socket.on('toggle_professional', async (data) => {
+        const { username, isProfessional } = data;
+        await User.updateOne({ username }, { isProfessional });
     });
 
     socket.on('force_logout', (socketIdToKick) => {
@@ -133,56 +142,36 @@ app.post('/webhook', async (req, res) => {
     const chatId = body.senderData?.chatId;
     if (!chatId) return res.sendStatus(200);
 
-    let text = (body.messageData?.textMessageData?.textMessage || 
-                body.messageData?.extendedTextMessageData?.text || "").trim();
-
+    let text = (body.messageData?.textMessageData?.textMessage || body.messageData?.extendedTextMessageData?.text || "").trim();
     if (!text) return res.sendStatus(200);
     console.log(`💬 הלקוח (${chatId}) שלח: "${text}"`);
 
-    let client = await Client.findOne({ chatId });
-    if (!client) {
-        client = new Client({ chatId });
-    }
-
+    let client = await Client.findOne({ chatId }) || new Client({ chatId });
     client.messages.push({ sender: 'customer', text });
 
-    // אם הלקוח כרגע בשיחה עם נציג או ממתין, מעבירים ישירות לדשבורד ולא מקפיצים בוט
-    if (client.status === 'WAITING' || client.status === 'IN_CHAT') {
+    // אם הלקוח בשיחה או ממתין (רגיל או למקצועי), מעבירים ישר לדשבורד
+    if (client.status === 'WAITING' || client.status === 'WAITING_PRO' || client.status === 'IN_CHAT') {
         await client.save();
         io.emit('chat_updated', { chatId, message: { sender: 'customer', text, timestamp: new Date() } });
         return res.sendStatus(200);
     }
 
-    // --- לוגיקת הבוט האוטומטית ---
+    // --- לוגיקת הבוט ---
     if (client.status === 'START' || text === "חזור") {
-        const menuText = 
-            `*ברוכים הבאים ל-TPG פיתוח אוטימציות ובוטים* 🤖\n\n` +
-            `אנא בחרו אחת מהאפשרויות הבאות (השיבו עם מספר):\n\n` +
-            `*1️⃣* - מידע על המערכות שלנו\n` +
-            `*2️⃣* - שיחה עם נציג אנושי`;
-        
-        await sendWAMessage(chatId, menuText);
+        await sendWAMessage(chatId, `*ברוכים הבאים ל-TPG* 🤖\n\n*1️⃣* - מידע\n*2️⃣* - שיחה עם נציג`);
         client.status = 'MENU';
-    } 
-    else if (client.status === 'MENU') {
-        if (text === "1") {
-            await sendWAMessage(chatId, "אנחנו ב-TPG מתמחים בפיתוח בוטים, מערכות CRM ואוטומציות חכמות לעסקים.\n\nלמעבר לשיחה עם נציג הקישו *2*.\nלחזרה לתפריט הראשי שלחו *חזור*.");
-        } else if (text === "2") {
-            await sendWAMessage(chatId, "בשמחה! איך קוראים לכם?");
-            client.status = 'ASK_NAME';
-        } else {
-            await sendWAMessage(chatId, "אנא בחרו אפשרות תקינה (1 או 2). לחזרה שלחו *חזור*.");
-        }
-    }
-    else if (client.status === 'ASK_NAME') {
+    } else if (client.status === 'MENU') {
+        if (text === "1") await sendWAMessage(chatId, "TPG מתמחים בפיתוח בוטים ו-CRM.\nלשיחה עם נציג הקישו *2*. לתפריט שלחו *חזור*.");
+        else if (text === "2") { await sendWAMessage(chatId, "איך קוראים לכם?"); client.status = 'ASK_NAME'; }
+        else await sendWAMessage(chatId, "נא לבחור 1 או 2.");
+    } else if (client.status === 'ASK_NAME') {
         client.name = text;
-        await sendWAMessage(chatId, `נעים מאוד ${text}, מה מהות הפנייה? (בכמה מילים)`);
+        await sendWAMessage(chatId, `נעים מאוד ${text}, מה מהות הפנייה?`);
         client.status = 'ASK_ISSUE';
-    }
-    else if (client.status === 'ASK_ISSUE') {
+    } else if (client.status === 'ASK_ISSUE') {
         client.issue = text;
         client.status = 'WAITING';
-        await sendWAMessage(chatId, "תודה! הפנייה הועברה לצוות שלנו. נציג יחזור אליך בהקדם. 🚀");
+        await sendWAMessage(chatId, "הפנייה הועברה לצוות. נחזור אליך בהקדם.");
         io.emit('new_ticket', client);
     }
 
@@ -191,40 +180,26 @@ app.post('/webhook', async (req, res) => {
 });
 
 // ==========================================
-// --- מערכת ניהול (Dashboard) מעוצבת ---
+// --- מערכת ניהול (Dashboard) ---
 // ==========================================
 
 app.get('/dashboard', (req, res) => {
     if (req.session.user) return res.redirect('/admin');
-    
     res.send(`
         <!DOCTYPE html>
         <html lang="he" dir="rtl">
         <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>TPG CRM - התחברות</title>
+            <meta charset="UTF-8"><title>TPG - התחברות</title>
             <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
-            <style>
-                body { background-color: #f0f2f5; height: 100vh; display: flex; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
-                .login-card { max-width: 400px; width: 100%; border-radius: 15px; border: none; }
-                .brand-logo { font-size: 2.2rem; font-weight: 900; color: #0d6efd; text-align: center; margin-bottom: 20px; }
-            </style>
+            <style>body{background:#f0f2f5;height:100vh;display:flex;align-items:center;justify-content:center;}</style>
         </head>
         <body>
-            <div class="card shadow-lg login-card p-4 bg-white">
-                <div class="brand-logo">TPG CRM</div>
-                <h5 class="text-center text-muted mb-4">התחבר למערכת הניהול</h5>
+            <div class="card p-4 shadow bg-white" style="width:100%; max-width:400px; border-radius:15px;">
+                <h3 class="text-center text-primary fw-bold mb-4">TPG CRM</h3>
                 <form action="/login" method="post">
-                    <div class="mb-3">
-                        <label class="form-label fw-bold">שם משתמש</label>
-                        <input type="text" name="u" class="form-control" required>
-                    </div>
-                    <div class="mb-4">
-                        <label class="form-label fw-bold">סיסמה</label>
-                        <input type="password" name="p" class="form-control" required>
-                    </div>
-                    <button type="submit" class="btn btn-primary w-100 py-2 fw-bold fs-5 shadow-sm">היכנס למערכת</button>
+                    <input type="text" name="u" class="form-control mb-3" placeholder="שם משתמש" required>
+                    <input type="password" name="p" class="form-control mb-4" placeholder="סיסמה" required>
+                    <button type="submit" class="btn btn-primary w-100 fw-bold">התחבר</button>
                 </form>
             </div>
         </body>
@@ -237,29 +212,31 @@ app.post('/login', async (req, res) => {
     if (user) {
         req.session.user = { username: user.username, role: user.role, isProfessional: user.isProfessional };
         res.redirect('/admin');
-    } else {
-        res.send("<script>alert('פרטים שגויים'); window.location='/dashboard';</script>");
-    }
+    } else res.send("<script>alert('פרטים שגויים'); window.location='/dashboard';</script>");
 });
 
 app.get('/admin', async (req, res) => {
     if (!req.session.user) return res.redirect('/dashboard');
     const user = req.session.user;
     
-    const clients = await Client.find({ status: { $in: ['WAITING', 'IN_CHAT'] } });
+    // סינון פניות: נציג רגיל רואה רק המתנה וצ'אט. צוות מקצועי רואה גם WAITING_PRO
+    let allowedStatuses = ['WAITING', 'IN_CHAT'];
+    if (user.isProfessional || user.role === 'admin') allowedStatuses.push('WAITING_PRO');
+    
+    const clients = await Client.find({ status: { $in: allowedStatuses } });
+    const allUsers = user.role === 'admin' ? await User.find({}) : [];
 
     res.send(`
         <!DOCTYPE html>
         <html lang="he" dir="rtl">
         <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>TPG CRM - Workspace</title>
+            <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>TPG Workspace</title>
             <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
             <script src="/socket.io/socket.io.js"></script>
             <style>
                 body { background-color: #f4f6f9; font-family: system-ui, sans-serif; overflow-x: hidden; }
-                .chat-box { height: 400px; overflow-y: auto; background: #e5ddd5; border-radius: 8px; padding: 15px; }
+                .chat-box { height: 350px; overflow-y: auto; background: #e5ddd5; border-radius: 8px; padding: 15px; }
                 .msg { max-width: 75%; padding: 8px 12px; border-radius: 8px; margin-bottom: 10px; clear: both; }
                 .msg.customer { background: #fff; float: right; border-top-right-radius: 0; }
                 .msg.agent { background: #dcf8c6; float: left; border-top-left-radius: 0; text-align: left; }
@@ -270,7 +247,7 @@ app.get('/admin', async (req, res) => {
         <body class="p-3">
             <div class="container-fluid">
                 <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom">
-                    <h3 class="m-0 fw-bold text-primary">TPG Workspace <span class="badge bg-secondary fs-6">${user.role === 'admin' ? 'מנהל' : 'נציג'}</span></h3>
+                    <h3 class="m-0 fw-bold text-primary">TPG Workspace <span class="badge bg-secondary fs-6">${user.role === 'admin' ? 'מנהל' : (user.isProfessional ? 'נציג מקצועי' : 'נציג')}</span></h3>
                     <a href="/logout" class="btn btn-outline-danger btn-sm fw-bold">התנתק 🚪</a>
                 </div>
 
@@ -279,8 +256,8 @@ app.get('/admin', async (req, res) => {
                         <h5 class="fw-bold">פניות פעילות</h5>
                         <ul class="list-group" id="tickets-list">
                             ${clients.map(c => `
-                                <li class="list-group-item ticket-item" onclick="openChat('${c.chatId}', '${c.name || 'לקוח'}')">
-                                    <strong>${c.name || c.chatId.replace('@c.us','')}</strong><br>
+                                <li class="list-group-item ticket-item ${c.status === 'WAITING_PRO' ? 'list-group-item-warning' : ''}" onclick="openChat('${c.chatId}', '${c.name || 'לקוח'}')">
+                                    <strong>${c.name || c.chatId.replace('@c.us','')}</strong> ${c.status === 'WAITING_PRO' ? '⭐' : ''}<br>
                                     <small class="text-muted">${c.issue}</small>
                                 </li>
                             `).join('')}
@@ -292,9 +269,36 @@ app.get('/admin', async (req, res) => {
                         <div class="chat-box border mb-2" id="chat-box"></div>
                         <div class="input-group">
                             <input type="text" id="chat-input" class="form-control" placeholder="הקלד הודעה..." disabled>
-                            <button class="btn btn-primary" id="btn-send" disabled onclick="sendMessage()">שלח</button>
-                            <button class="btn btn-success" id="btn-close" disabled onclick="closeTicket()">סיום טיפול ✔️</button>
+                            <button class="btn btn-primary px-4" id="btn-send" disabled onclick="sendMessage()">שלח</button>
                         </div>
+                        <div class="d-flex gap-2 mt-3">
+                            <button class="btn btn-warning flex-fill fw-bold" id="btn-transfer" disabled onclick="actionTicket('transfer_pro')">🧑‍🔧 העבר לצוות מקצועי</button>
+                            <button class="btn btn-success flex-fill fw-bold" id="btn-sale" disabled onclick="actionTicket('sale')">💰 סיום מכירה</button>
+                            <button class="btn btn-secondary flex-fill fw-bold" id="btn-close" disabled onclick="actionTicket('close')">✔️ סיום פנייה</button>
+                        </div>
+
+                        ${user.role === 'admin' ? `
+                        <div class="mt-5 border-top pt-3">
+                            <h5 class="fw-bold text-dark">⚙️ מערכת ניהול נציגים והרשאות</h5>
+                            <table class="table table-sm table-bordered mt-2 bg-white">
+                                <thead class="table-light"><tr><th>שם משתמש</th><th>הרשאת מנהל</th><th>צוות מקצועי?</th><th>פעולה</th></tr></thead>
+                                <tbody>
+                                    ${allUsers.map(u => `
+                                        <tr>
+                                            <td class="align-middle">${u.username}</td>
+                                            <td class="align-middle">${u.role === 'admin' ? '✅ כן' : '❌ לא'}</td>
+                                            <td class="align-middle">${u.isProfessional ? '✅ כן' : '❌ לא'}</td>
+                                            <td>
+                                                <button class="btn btn-sm ${u.isProfessional ? 'btn-danger' : 'btn-primary'}" onclick="togglePro('${u.username}', ${!u.isProfessional})">
+                                                    ${u.isProfessional ? 'הסר מצוות מקצועי' : 'הגדר כצוות מקצועי'}
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                        ` : ''}
                     </div>
 
                     <div class="col-md-3 border-start ${user.role !== 'admin' ? 'd-none' : ''}">
@@ -307,38 +311,44 @@ app.get('/admin', async (req, res) => {
             <script>
                 const currentUser = { username: '${user.username}', role: '${user.role}' };
                 const socket = io();
-                
                 let activeChatId = null;
 
-                socket.on('connect', () => {
-                    socket.emit('login', currentUser);
-                });
+                socket.on('connect', () => { socket.emit('login', currentUser); });
 
                 function openChat(chatId, name) {
                     activeChatId = chatId;
                     document.getElementById('chat-header').innerText = "בשיחה עם: " + name;
                     document.getElementById('chat-input').disabled = false;
                     document.getElementById('btn-send').disabled = false;
+                    document.getElementById('btn-transfer').disabled = false;
+                    document.getElementById('btn-sale').disabled = false;
                     document.getElementById('btn-close').disabled = false;
-                    document.getElementById('chat-box').innerHTML = '<div class="text-center text-muted mt-5">התחלת שיחה בזמן אמת (חיבור סוקט פעיל)</div>';
+                    document.getElementById('chat-box').innerHTML = '<div class="text-center text-muted mt-5">שיחה פעילה...</div>';
                 }
 
                 function sendMessage() {
                     const input = document.getElementById('chat-input');
                     if(!input.value.trim() || !activeChatId) return;
-                    
-                    socket.emit('agent_send_message', {
-                        chatId: activeChatId,
-                        text: input.value.trim(),
-                        agentName: currentUser.username
-                    });
+                    socket.emit('agent_send_message', { chatId: activeChatId, text: input.value.trim(), agentName: currentUser.username });
                     input.value = '';
                 }
 
-                function closeTicket() {
-                    if(confirm("לסגור פנייה זו? הלקוח יחזור לסטטוס בוט אוטומטי בהודעה הבאה.")) {
-                        socket.emit('close_ticket', activeChatId);
-                        location.reload();
+                function actionTicket(actionType) {
+                    let msg = "";
+                    if(actionType === 'close') msg = "לסגור פנייה זו?";
+                    if(actionType === 'sale') msg = "לסגור את הפנייה כהצלחה במכירה (ישלח הודעת תודה)?";
+                    if(actionType === 'transfer_pro') msg = "להעביר פנייה זו לטיפול של צוות מקצועי?";
+                    
+                    if(confirm(msg)) {
+                        socket.emit('action_ticket', { chatId: activeChatId, action: actionType });
+                        setTimeout(() => location.reload(), 300);
+                    }
+                }
+
+                function togglePro(username, makePro) {
+                    if(confirm("לשנות הגדרות צוות מקצועי לנציג זה?")) {
+                        socket.emit('toggle_professional', { username, isProfessional: makePro });
+                        setTimeout(() => location.reload(), 300);
                     }
                 }
 
@@ -353,13 +363,7 @@ app.get('/admin', async (req, res) => {
                     }
                 });
 
-                socket.on('ticket_closed', (chatId) => {
-                    if(chatId === activeChatId) {
-                        alert("הפנייה נסגרה בהצלחה.");
-                        location.reload();
-                    }
-                });
-
+                socket.on('ticket_closed', () => location.reload());
                 socket.on('new_ticket', () => location.reload()); 
 
                 socket.on('presence_updated', (users) => {
@@ -368,20 +372,17 @@ app.get('/admin', async (req, res) => {
                     list.innerHTML = users.map(u => \`
                         <li class="list-group-item d-flex justify-content-between align-items-center">
                             \${u.username}
-                            \${u.username !== currentUser.username ? \`<button class="btn btn-sm btn-danger" onclick="kickUser('\${u.socketId}')">נתק משתמש</button>\` : ''}
+                            \${u.username !== currentUser.username ? \`<button class="btn btn-sm btn-outline-danger" onclick="kickUser('\${u.socketId}')">נתק</button>\` : ''}
                         </li>
                     \`).join('');
                 });
 
                 function kickUser(socketId) {
-                    if(confirm("לנתק משתמש זה בכוח?")) {
-                        socket.emit('force_logout', socketId);
-                    }
+                    if(confirm("לנתק משתמש זה בכוח?")) socket.emit('force_logout', socketId);
                 }
 
                 socket.on('kicked_out', (reason) => {
-                    alert(reason);
-                    window.location.href = '/logout';
+                    alert(reason); window.location.href = '/logout';
                 });
 
             </script>
@@ -390,10 +391,7 @@ app.get('/admin', async (req, res) => {
     `);
 });
 
-app.get('/logout', (req, res) => { 
-    req.session.destroy(); 
-    res.redirect('/dashboard'); 
-});
+app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/dashboard'); });
 
 // --- הפעלת שרת משולב ---
 const PORT = process.env.PORT || 8000;
