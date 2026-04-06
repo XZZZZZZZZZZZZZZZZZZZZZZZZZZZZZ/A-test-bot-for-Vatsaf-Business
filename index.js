@@ -36,7 +36,7 @@ const ClientSchema = new mongoose.Schema({
     chatId: String,
     name: String,
     issue: String,
-    status: { type: String, default: 'START' }, // סטטוסים: START, MENU, WAITING, WAITING_PRO, IN_CHAT
+    status: { type: String, default: 'START' }, 
     messages: [{ sender: String, text: String, timestamp: { type: Date, default: Date.now } }] 
 });
 const Client = mongoose.model('Client', ClientSchema);
@@ -49,17 +49,13 @@ const UserSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', UserSchema);
 
-// יצירת משתמש מנהל ראשוני (או עדכון הרשאות)
+// יצירת משתמש מנהל ראשוני (או שדרוג הקיים)
 async function createAdmin() {
     await User.findOneAndUpdate(
         { username: 'M' }, 
         { pass: '1', role: 'admin', isProfessional: true },
         { upsert: true, new: true }
     );
-    const agentExists = await User.findOne({ username: 'Agent1' });
-    if (!agentExists) {
-        await new User({ username: 'Agent1', pass: '1', role: 'agent', isProfessional: false }).save(); 
-    }
 }
 
 // --- פונקציית שליחת הודעת טקסט לוואטסאפ ---
@@ -95,7 +91,6 @@ io.on('connection', (socket) => {
         io.emit('chat_updated', { chatId, message: { sender: agentName, text, timestamp: new Date() } });
     });
 
-    // כפתורי הפעולות החדשים
     socket.on('action_ticket', async (data) => {
         const { chatId, action } = data;
         
@@ -112,10 +107,9 @@ io.on('connection', (socket) => {
             await sendWAMessage(chatId, "פנייתך הועברה לצוות המקצועי שלנו, נציג בכיר יתפנה אליך בהקדם.");
         }
         
-        io.emit('ticket_closed', chatId); // מרענן את המסכים של כולם
+        io.emit('ticket_closed', chatId); 
     });
 
-    // שינוי הרשאות צוות מקצועי על ידי מנהל
     socket.on('toggle_professional', async (data) => {
         const { username, isProfessional } = data;
         await User.updateOne({ username }, { isProfessional });
@@ -144,19 +138,16 @@ app.post('/webhook', async (req, res) => {
 
     let text = (body.messageData?.textMessageData?.textMessage || body.messageData?.extendedTextMessageData?.text || "").trim();
     if (!text) return res.sendStatus(200);
-    console.log(`💬 הלקוח (${chatId}) שלח: "${text}"`);
 
     let client = await Client.findOne({ chatId }) || new Client({ chatId });
     client.messages.push({ sender: 'customer', text });
 
-    // אם הלקוח בשיחה או ממתין (רגיל או למקצועי), מעבירים ישר לדשבורד
     if (client.status === 'WAITING' || client.status === 'WAITING_PRO' || client.status === 'IN_CHAT') {
         await client.save();
         io.emit('chat_updated', { chatId, message: { sender: 'customer', text, timestamp: new Date() } });
         return res.sendStatus(200);
     }
 
-    // --- לוגיקת הבוט ---
     if (client.status === 'START' || text === "חזור") {
         await sendWAMessage(chatId, `*ברוכים הבאים ל-TPG* 🤖\n\n*1️⃣* - מידע\n*2️⃣* - שיחה עם נציג`);
         client.status = 'MENU';
@@ -180,9 +171,30 @@ app.post('/webhook', async (req, res) => {
 });
 
 // ==========================================
+// --- הוספת משתמשים (API) ---
+// ==========================================
+app.post('/api/add_user', async (req, res) => {
+    // רק מנהל יכול להוסיף משתמשים
+    if (!req.session.user || req.session.user.role !== 'admin') return res.redirect('/admin');
+    
+    const { new_username, new_pass, new_role } = req.body;
+    
+    // בדיקה אם המשתמש כבר קיים
+    const exists = await User.findOne({ username: new_username });
+    if (!exists && new_username && new_pass) {
+        await new User({ 
+            username: new_username, 
+            pass: new_pass, 
+            role: new_role, 
+            isProfessional: false 
+        }).save();
+    }
+    res.redirect('/admin');
+});
+
+// ==========================================
 // --- מערכת ניהול (Dashboard) ---
 // ==========================================
-
 app.get('/dashboard', (req, res) => {
     if (req.session.user) return res.redirect('/admin');
     res.send(`
@@ -219,7 +231,6 @@ app.get('/admin', async (req, res) => {
     if (!req.session.user) return res.redirect('/dashboard');
     const user = req.session.user;
     
-    // סינון פניות: נציג רגיל רואה רק המתנה וצ'אט. צוות מקצועי רואה גם WAITING_PRO
     let allowedStatuses = ['WAITING', 'IN_CHAT'];
     if (user.isProfessional || user.role === 'admin') allowedStatuses.push('WAITING_PRO');
     
@@ -248,7 +259,7 @@ app.get('/admin', async (req, res) => {
             <div class="container-fluid">
                 <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom">
                     <h3 class="m-0 fw-bold text-primary">TPG Workspace <span class="badge bg-secondary fs-6">${user.role === 'admin' ? 'מנהל' : (user.isProfessional ? 'נציג מקצועי' : 'נציג')}</span></h3>
-                    <a href="/logout" class="btn btn-outline-danger btn-sm fw-bold">התנתק 🚪</a>
+                    <a href="/logout" class="btn btn-danger btn-sm fw-bold">התנתק מהמערכת 🚪</a>
                 </div>
 
                 <div class="row">
@@ -271,6 +282,7 @@ app.get('/admin', async (req, res) => {
                             <input type="text" id="chat-input" class="form-control" placeholder="הקלד הודעה..." disabled>
                             <button class="btn btn-primary px-4" id="btn-send" disabled onclick="sendMessage()">שלח</button>
                         </div>
+                        
                         <div class="d-flex gap-2 mt-3">
                             <button class="btn btn-warning flex-fill fw-bold" id="btn-transfer" disabled onclick="actionTicket('transfer_pro')">🧑‍🔧 העבר לצוות מקצועי</button>
                             <button class="btn btn-success flex-fill fw-bold" id="btn-sale" disabled onclick="actionTicket('sale')">💰 סיום מכירה</button>
@@ -278,15 +290,30 @@ app.get('/admin', async (req, res) => {
                         </div>
 
                         ${user.role === 'admin' ? `
-                        <div class="mt-5 border-top pt-3">
-                            <h5 class="fw-bold text-dark">⚙️ מערכת ניהול נציגים והרשאות</h5>
+                        <div class="mt-5 border-top pt-4">
+                            <h4 class="fw-bold text-dark mb-3">⚙️ מערכת ניהול מנהלים</h4>
+                            
+                            <div class="card p-3 mb-4 shadow-sm">
+                                <h6 class="fw-bold text-primary">➕ הוספת משתמש חדש</h6>
+                                <form action="/api/add_user" method="POST" class="d-flex gap-2 align-items-center mt-2">
+                                    <input type="text" name="new_username" class="form-control" placeholder="שם משתמש" required>
+                                    <input type="text" name="new_pass" class="form-control" placeholder="סיסמה" required>
+                                    <select name="new_role" class="form-select">
+                                        <option value="agent">נציג רגיל</option>
+                                        <option value="admin">מנהל</option>
+                                    </select>
+                                    <button type="submit" class="btn btn-success fw-bold text-nowrap">צור משתמש</button>
+                                </form>
+                            </div>
+
+                            <h6 class="fw-bold">רשימת משתמשים במערכת:</h6>
                             <table class="table table-sm table-bordered mt-2 bg-white">
-                                <thead class="table-light"><tr><th>שם משתמש</th><th>הרשאת מנהל</th><th>צוות מקצועי?</th><th>פעולה</th></tr></thead>
+                                <thead class="table-light"><tr><th>שם משתמש</th><th>הרשאה</th><th>צוות מקצועי?</th><th>פעולות</th></tr></thead>
                                 <tbody>
                                     ${allUsers.map(u => `
                                         <tr>
-                                            <td class="align-middle">${u.username}</td>
-                                            <td class="align-middle">${u.role === 'admin' ? '✅ כן' : '❌ לא'}</td>
+                                            <td class="align-middle fw-bold">${u.username}</td>
+                                            <td class="align-middle">${u.role === 'admin' ? '👑 מנהל' : '🎧 נציג'}</td>
                                             <td class="align-middle">${u.isProfessional ? '✅ כן' : '❌ לא'}</td>
                                             <td>
                                                 <button class="btn btn-sm ${u.isProfessional ? 'btn-danger' : 'btn-primary'}" onclick="togglePro('${u.username}', ${!u.isProfessional})">
