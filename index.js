@@ -1,14 +1,14 @@
 require('dotenv').config();
 const express = require('express');
-const http = require('http'); // נוסף עבור Socket.io
-const { Server } = require('socket.io'); // נוסף עבור Socket.io
+const http = require('http'); 
+const { Server } = require('socket.io'); 
 const axios = require('axios');
 const mongoose = require('mongoose');
 const session = require('express-session');
 
 const app = express();
-const server = http.createServer(app); // עטיפת השרת
-const io = new Server(server, { cors: { origin: '*' } }); // הפעלת הסוקטים
+const server = http.createServer(app); 
+const io = new Server(server, { cors: { origin: '*' } }); 
 
 // --- הגדרות שרת בסיסיות ---
 app.use(express.json());
@@ -31,35 +31,43 @@ mongoose.connect(MONGODB_URI || 'mongodb://localhost:27017/tpg_crm')
     })
     .catch(err => console.log('❌ DB Connection Error:', err));
 
-// מודלים של מסד הנתונים (עודכנו לשמירת היסטוריית שיחות והרשאות)
+// מודלים של מסד הנתונים
 const ClientSchema = new mongoose.Schema({
     chatId: String,
     name: String,
     issue: String,
-    status: { type: String, default: 'START' }, // START, MENU, ASK_NAME, ASK_ISSUE, WAITING, IN_CHAT
-    messages: [{ sender: String, text: String, timestamp: { type: Date, default: Date.now } }] // היסטוריית הצ'אט
+    status: { type: String, default: 'START' }, 
+    messages: [{ sender: String, text: String, timestamp: { type: Date, default: Date.now } }] 
 });
 const Client = mongoose.model('Client', ClientSchema);
 
 const UserSchema = new mongoose.Schema({
     username: String,
     pass: String,
-    role: { type: String, default: 'agent' }, // admin / agent
+    role: { type: String, default: 'agent' }, 
     isProfessional: { type: Boolean, default: false }
 });
 const User = mongoose.model('User', UserSchema);
 
-// יצירת משתמש מנהל ראשוני
+// יצירת משתמש מנהל (או עדכון ההרשאות שלו למנהל אם הוא כבר קיים)
 async function createAdmin() {
-    const adminExists = await User.findOne({ username: 'M' });
-    if (!adminExists) {
-        await new User({ username: 'M', pass: '1', role: 'admin' }).save();
-        await new User({ username: 'Agent1', pass: '1', role: 'agent', isProfessional: false }).save(); // נציג לדוגמה
-        console.log("👤 Admin user 'M' and test agent 'Agent1' created.");
+    // הפונקציה הזו מוצאת את M, מעדכנת אותו למנהל, ואם הוא לא קיים - יוצרת אותו מאפס
+    await User.findOneAndUpdate(
+        { username: 'M' }, 
+        { pass: '1', role: 'admin', isProfessional: true },
+        { upsert: true, new: true }
+    );
+    
+    // יצירת נציג בדיקות (רק אם לא קיים)
+    const agentExists = await User.findOne({ username: 'Agent1' });
+    if (!agentExists) {
+        await new User({ username: 'Agent1', pass: '1', role: 'agent', isProfessional: false }).save(); 
     }
+    
+    console.log("👤 Admin user 'M' role is verified as ADMIN.");
 }
 
-// --- פונקציית שליחת הודעת טקסט רגילה (וואטסאפ) ---
+// --- פונקציית שליחת הודעת טקסט לוואטסאפ ---
 async function sendWAMessage(chatId, message) {
     if (!INSTANCE_ID || !API_TOKEN) {
         console.log(`[Mock WA Send to ${chatId}]: ${message}`);
@@ -72,58 +80,43 @@ async function sendWAMessage(chatId, message) {
 // ==========================================
 // --- מערכת נוכחות וסוקטים (זמן אמת) ---
 // ==========================================
-const onlineUsers = new Map(); // שמירת משתמשים מחוברים בזיכרון
+const onlineUsers = new Map(); 
 
 io.on('connection', (socket) => {
     
-    // 1. התחברות נציג לדשבורד
     socket.on('login', (userData) => {
         onlineUsers.set(socket.id, { ...userData, socketId: socket.id, loginTime: new Date() });
         io.emit('presence_updated', Array.from(onlineUsers.values()));
     });
 
-    // 2. נציג שולח הודעה ללקוח מהדשבורד
     socket.on('agent_send_message', async (data) => {
         const { chatId, text, agentName } = data;
         
-        // שליחה לוואטסאפ של הלקוח
         await sendWAMessage(chatId, text);
         
-        // שמירה במסד הנתונים
-        const updatedClient = await Client.findOneAndUpdate(
+        await Client.findOneAndUpdate(
             { chatId },
             { 
                 $push: { messages: { sender: agentName, text } },
-                $set: { status: 'IN_CHAT' } // מעביר לסטטוס צ'אט פעיל
+                $set: { status: 'IN_CHAT' } 
             },
             { new: true }
         );
         
-        // עדכון כל הדשבורדים בזמן אמת
         io.emit('chat_updated', { chatId, message: { sender: agentName, text, timestamp: new Date() } });
     });
 
-    // 3. סגירת פנייה על ידי הנציג
     socket.on('close_ticket', async (chatId) => {
         await Client.updateOne({ chatId }, { status: 'START' });
-        // שליחת הודעת סיום ללקוח (אופציונלי)
-        await sendWAMessage(chatId, "הפנייה נסגרה על ידי הנציג. לעזרה נוספת, שלח הודעה חדשה.");
+        await sendWAMessage(chatId, "הפנייה נסגרה על ידי הנציג. לעזרה נוספת, שלחו הודעה חדשה ויפתח מענה אוטומטי.");
         io.emit('ticket_closed', chatId);
     });
 
-    // 4. פעולות מנהל: ניתוק בכוח ושינוי הרשאות
     socket.on('force_logout', (socketIdToKick) => {
         io.to(socketIdToKick).emit('kicked_out', 'נותקת על ידי מנהל המערכת.');
         io.sockets.sockets.get(socketIdToKick)?.disconnect(true);
     });
 
-    socket.on('toggle_professional', async (data) => {
-        const { username, isProfessional } = data;
-        await User.updateOne({ username }, { isProfessional });
-        io.emit('system_alert', `ההרשאות של ${username} עודכנו.`);
-    });
-
-    // התנתקות טבעית
     socket.on('disconnect', () => {
         onlineUsers.delete(socket.id);
         io.emit('presence_updated', Array.from(onlineUsers.values()));
@@ -151,7 +144,6 @@ app.post('/webhook', async (req, res) => {
         client = new Client({ chatId });
     }
 
-    // שמירת ההודעה הנכנסת להיסטוריה
     client.messages.push({ sender: 'customer', text });
 
     // אם הלקוח כרגע בשיחה עם נציג או ממתין, מעבירים ישירות לדשבורד ולא מקפיצים בוט
@@ -191,8 +183,6 @@ app.post('/webhook', async (req, res) => {
         client.issue = text;
         client.status = 'WAITING';
         await sendWAMessage(chatId, "תודה! הפנייה הועברה לצוות שלנו. נציג יחזור אליך בהקדם. 🚀");
-        
-        // התראת סוקט לדשבורד שיש לקוח חדש שממתין
         io.emit('new_ticket', client);
     }
 
@@ -204,7 +194,6 @@ app.post('/webhook', async (req, res) => {
 // --- מערכת ניהול (Dashboard) מעוצבת ---
 // ==========================================
 
-// מסך התחברות
 app.get('/dashboard', (req, res) => {
     if (req.session.user) return res.redirect('/admin');
     
@@ -243,7 +232,6 @@ app.get('/dashboard', (req, res) => {
     `);
 });
 
-// תהליך כניסה
 app.post('/login', async (req, res) => {
     const user = await User.findOne({ username: req.body.u, pass: req.body.p });
     if (user) {
@@ -254,12 +242,10 @@ app.post('/login', async (req, res) => {
     }
 });
 
-// מסך הניהול הראשי (זמן אמת)
 app.get('/admin', async (req, res) => {
     if (!req.session.user) return res.redirect('/dashboard');
     const user = req.session.user;
     
-    // שליפת כל הלקוחות שממתינים או נמצאים בשיחה פעילה
     const clients = await Client.find({ status: { $in: ['WAITING', 'IN_CHAT'] } });
 
     res.send(`
@@ -319,7 +305,6 @@ app.get('/admin', async (req, res) => {
             </div>
 
             <script>
-                // הגדרת נתוני המשתמש הנוכחי והתחברות לסוקט
                 const currentUser = { username: '${user.username}', role: '${user.role}' };
                 const socket = io();
                 
@@ -329,14 +314,13 @@ app.get('/admin', async (req, res) => {
                     socket.emit('login', currentUser);
                 });
 
-                // --- אירועי צ'אט ---
                 function openChat(chatId, name) {
                     activeChatId = chatId;
                     document.getElementById('chat-header').innerText = "בשיחה עם: " + name;
                     document.getElementById('chat-input').disabled = false;
                     document.getElementById('btn-send').disabled = false;
                     document.getElementById('btn-close').disabled = false;
-                    document.getElementById('chat-box').innerHTML = '<div class="text-center text-muted mt-5">היסטוריית שיחה נטענת... (כדי לראות היסטוריה מלאה יש להוסיף שליפת API)</div>';
+                    document.getElementById('chat-box').innerHTML = '<div class="text-center text-muted mt-5">התחלת שיחה בזמן אמת (חיבור סוקט פעיל)</div>';
                 }
 
                 function sendMessage() {
@@ -352,7 +336,7 @@ app.get('/admin', async (req, res) => {
                 }
 
                 function closeTicket() {
-                    if(confirm("לסגור פנייה זו? הלקוח יחזור לסטטוס בוט אוטומטי.")) {
+                    if(confirm("לסגור פנייה זו? הלקוח יחזור לסטטוס בוט אוטומטי בהודעה הבאה.")) {
                         socket.emit('close_ticket', activeChatId);
                         location.reload();
                     }
@@ -371,21 +355,20 @@ app.get('/admin', async (req, res) => {
 
                 socket.on('ticket_closed', (chatId) => {
                     if(chatId === activeChatId) {
-                        alert("הפנייה נסגרה.");
+                        alert("הפנייה נסגרה בהצלחה.");
                         location.reload();
                     }
                 });
 
-                socket.on('new_ticket', () => location.reload()); // מרענן את הרשימה כשיש לקוח חדש
+                socket.on('new_ticket', () => location.reload()); 
 
-                // --- אירועי מנהל ---
                 socket.on('presence_updated', (users) => {
                     if(currentUser.role !== 'admin') return;
                     const list = document.getElementById('online-users-list');
                     list.innerHTML = users.map(u => \`
                         <li class="list-group-item d-flex justify-content-between align-items-center">
                             \${u.username}
-                            \${u.username !== currentUser.username ? \`<button class="btn btn-sm btn-danger" onclick="kickUser('\${u.socketId}')">נתק</button>\` : ''}
+                            \${u.username !== currentUser.username ? \`<button class="btn btn-sm btn-danger" onclick="kickUser('\${u.socketId}')">נתק משתמש</button>\` : ''}
                         </li>
                     \`).join('');
                 });
@@ -407,7 +390,6 @@ app.get('/admin', async (req, res) => {
     `);
 });
 
-// התנתקות ידנית
 app.get('/logout', (req, res) => { 
     req.session.destroy(); 
     res.redirect('/dashboard'); 
