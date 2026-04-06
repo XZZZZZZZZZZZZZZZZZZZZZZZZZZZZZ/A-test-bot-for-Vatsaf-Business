@@ -171,7 +171,7 @@ app.post('/webhook', async (req, res) => {
 });
 
 // ==========================================
-// --- הוספת משתמשים (API) ---
+// --- API: הוספת משתמשים ושליפת היסטוריה ---
 // ==========================================
 app.post('/api/add_user', async (req, res) => {
     if (!req.session.user || req.session.user.role !== 'admin') return res.redirect('/admin');
@@ -194,6 +194,14 @@ app.post('/api/add_user', async (req, res) => {
         }).save();
     }
     res.redirect('/admin');
+});
+
+// נתיב חדש לשליפת היסטוריית השיחה והנתונים של הלקוח
+app.get('/api/chat/:chatId', async (req, res) => {
+    if (!req.session.user) return res.status(401).json({ error: 'Unauthorized' });
+    const client = await Client.findOne({ chatId: req.params.chatId });
+    if (!client) return res.json({ messages: [], name: '', issue: '' });
+    res.json({ messages: client.messages, name: client.name, issue: client.issue });
 });
 
 // ==========================================
@@ -258,6 +266,7 @@ app.get('/admin', async (req, res) => {
                 .ticket-item { cursor: pointer; transition: 0.2s; }
                 .ticket-item:hover { background-color: #f8f9fa; }
                 .nav-link { cursor: pointer; }
+                .bot-summary { background-color: #e3f2fd; border: 1px solid #90caf9; border-radius: 8px; padding: 10px; margin-bottom: 15px; text-align: right; clear: both;}
             </style>
         </head>
         <body>
@@ -325,7 +334,6 @@ app.get('/admin', async (req, res) => {
                 <div class="row">
                     <div class="col-md-8 border-end pe-4">
                         <h4 class="fw-bold text-dark mb-4">⚙️ ניהול משתמשים במערכת</h4>
-                        
                         <div class="card p-4 mb-4 shadow-sm border-0 bg-light">
                             <h6 class="fw-bold text-primary mb-3">➕ הוספת משתמש חדש</h6>
                             <form action="/api/add_user" method="POST" class="row g-2 align-items-center">
@@ -377,8 +385,7 @@ app.get('/admin', async (req, res) => {
 
                     <div class="col-md-4 ps-4">
                         <h5 class="fw-bold mb-3">🟢 משתמשים מחוברים כעת</h5>
-                        <ul class="list-group shadow-sm" id="online-users-list">
-                            </ul>
+                        <ul class="list-group shadow-sm" id="online-users-list"></ul>
                     </div>
                 </div>
             </div>
@@ -391,7 +398,6 @@ app.get('/admin', async (req, res) => {
 
                 socket.on('connect', () => { socket.emit('login', currentUser); });
 
-                // מערכת הניווט בין הדפים
                 function switchTab(tabName) {
                     document.getElementById('page-workspace').classList.add('d-none');
                     const pageUsers = document.getElementById('page-users');
@@ -405,8 +411,8 @@ app.get('/admin', async (req, res) => {
                     document.getElementById('nav-' + tabName).classList.add('active');
                 }
 
-                // פונקציות צ'אט
-                function openChat(chatId, name) {
+                // הפונקציה ששונתה: שולפת היסטוריה מלאה מהשרת בעת פתיחת הצ'אט
+                async function openChat(chatId, name) {
                     activeChatId = chatId;
                     document.getElementById('chat-header').innerText = "בשיחה עם: " + name;
                     document.getElementById('chat-input').disabled = false;
@@ -414,7 +420,41 @@ app.get('/admin', async (req, res) => {
                     document.getElementById('btn-transfer').disabled = false;
                     document.getElementById('btn-sale').disabled = false;
                     document.getElementById('btn-close').disabled = false;
-                    document.getElementById('chat-box').innerHTML = '<div class="text-center text-muted mt-5">שיחה פעילה... היסטוריית ההתכתבות תופיע פה עם שליחת הודעות.</div>';
+                    
+                    const chatBox = document.getElementById('chat-box');
+                    chatBox.innerHTML = '<div class="text-center text-muted mt-5">טוען היסטוריית שיחה...</div>';
+
+                    try {
+                        const res = await fetch('/api/chat/' + chatId);
+                        const data = await res.json();
+                        
+                        let html = '';
+                        
+                        // קוביית סיכום נתוני הבוט
+                        if (data.name || data.issue) {
+                            html += \`
+                                <div class="bot-summary shadow-sm">
+                                    <strong>🤖 סיכום נתונים מהבוט:</strong><br>
+                                    <span class="text-muted">שם:</span> \${data.name || 'לא צוין'}<br>
+                                    <span class="text-muted">מהות הפנייה:</span> \${data.issue || 'לא צוין'}
+                                </div>
+                            \`;
+                        }
+
+                        // רינדור היסטוריית ההודעות
+                        data.messages.forEach(msg => {
+                            const isAgent = msg.sender !== 'customer';
+                            const senderName = isAgent ? msg.sender : 'לקוח';
+                            html += \`<div class="msg \${isAgent ? 'agent' : 'customer'} shadow-sm">
+                                <strong>\${senderName}:</strong> \${msg.text}
+                            </div>\`;
+                        });
+
+                        chatBox.innerHTML = html || '<div class="text-center text-muted mt-5">אין היסטוריית הודעות.</div>';
+                        chatBox.scrollTop = chatBox.scrollHeight;
+                    } catch(err) {
+                        chatBox.innerHTML = '<div class="text-center text-danger mt-5">שגיאה בטעינת היסטוריה.</div>';
+                    }
                 }
 
                 function sendMessage() {
@@ -443,7 +483,6 @@ app.get('/admin', async (req, res) => {
                     }
                 }
 
-                // אירועי סוקט (עדכונים בזמן אמת)
                 socket.on('chat_updated', (data) => {
                     if(data.chatId === activeChatId) {
                         const chatBox = document.getElementById('chat-box');
@@ -458,7 +497,6 @@ app.get('/admin', async (req, res) => {
                 socket.on('ticket_closed', () => location.reload());
                 socket.on('new_ticket', () => location.reload()); 
 
-                // רשימת נוכחות של המנהל
                 socket.on('presence_updated', (users) => {
                     if(currentUser.role !== 'admin') return;
                     const list = document.getElementById('online-users-list');
