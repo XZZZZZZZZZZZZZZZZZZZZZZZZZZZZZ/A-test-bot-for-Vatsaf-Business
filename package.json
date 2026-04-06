@@ -11,6 +11,7 @@
     "dotenv": "latest",
     "mongoose": "latest",
     "express-session": "latest",
-    "socket.io": "latest"
+    "socket.io": "latest",
+    "googleapis": "latest"
   }
 }
