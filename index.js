@@ -52,7 +52,7 @@ async function createAdmin() {
     await User.findOneAndUpdate(
         { username: 'M' }, 
         { pass: '1', role: 'admin', isProfessional: true },
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: 'after' }
     );
 }
 
@@ -261,7 +261,7 @@ app.get('/admin', async (req, res) => {
     const clients = await Client.find({ status: { $in: allowedStatuses } });
     const allUsers = user.role === 'admin' ? await User.find({}) : [];
 
-    res.send(\`
+    res.send(`
         <!DOCTYPE html>
         <html lang="he" dir="rtl">
         <head>
@@ -289,10 +289,10 @@ app.get('/admin', async (req, res) => {
                     <div class="collapse navbar-collapse" id="navbarNav">
                         <ul class="navbar-nav me-auto">
                             <li class="nav-item"><a class="nav-link active fw-bold" id="nav-workspace" onclick="switchTab('workspace')">דף הבית</a></li>
-                            \${user.role === 'admin' ? \`<li class="nav-item"><a class="nav-link fw-bold" id="nav-users" onclick="switchTab('users')">ניהול משתמשים</a></li>\` : ''}
+                            ${user.role === 'admin' ? `<li class="nav-item"><a class="nav-link fw-bold" id="nav-users" onclick="switchTab('users')">ניהול משתמשים</a></li>` : ''}
                         </ul>
                         <span class="navbar-text text-white me-4">
-                            מחובר/ת: <strong>\${user.username}</strong> <span class="badge bg-light text-dark ms-1">\${user.role === 'admin' ? 'מנהל' : (user.isProfessional ? 'צוות מקצועי' : 'נציג רגיל')}</span>
+                            מחובר/ת: <strong>${user.username}</strong> <span class="badge bg-light text-dark ms-1">${user.role === 'admin' ? 'מנהל' : (user.isProfessional ? 'צוות מקצועי' : 'נציג רגיל')}</span>
                         </span>
                         <a href="/logout" class="btn btn-danger btn-sm fw-bold shadow-sm">התנתק 🚪</a>
                     </div>
@@ -304,15 +304,15 @@ app.get('/admin', async (req, res) => {
                     <div class="col-md-4 col-lg-3 border-end">
                         <h5 class="fw-bold mb-3">פניות פעילות</h5>
                         <div id="tickets-list" class="d-flex flex-column gap-3 pb-3">
-                            \${clients.length === 0 ? '<div class="text-muted text-center mt-3">אין פניות כרגע</div>' : ''}
-                            \${clients.map(c => \`
-                                <div class="card ticket-item shadow-sm bg-white \${c.status === 'WAITING_PRO' ? 'ticket-pro' : ''}" onclick="openChat('\${c.chatId}', '\${c.name || 'לקוח'}')">
+                            ${clients.length === 0 ? '<div class="text-muted text-center mt-3">אין פניות כרגע</div>' : ''}
+                            ${clients.map(c => `
+                                <div class="card ticket-item shadow-sm bg-white ${c.status === 'WAITING_PRO' ? 'ticket-pro' : ''}" onclick="openChat('${c.chatId}', '${c.name || 'לקוח'}')">
                                     <div class="card-body p-3">
-                                        <h6 class="fw-bold mb-1 text-primary">\${c.name || c.chatId.replace('@c.us','')} \${c.status === 'WAITING_PRO' ? '⭐' : ''}</h6>
-                                        <p class="text-muted mb-0 small text-truncate" style="max-height: 2.5em; overflow: hidden;">\${c.issue || 'ללא פירוט'}</p>
+                                        <h6 class="fw-bold mb-1 text-primary">${c.name || c.chatId.replace('@c.us','')} ${c.status === 'WAITING_PRO' ? '⭐' : ''}</h6>
+                                        <p class="text-muted mb-0 small text-truncate" style="max-height: 2.5em; overflow: hidden;">${c.issue || 'ללא פירוט'}</p>
                                     </div>
                                 </div>
-                            \`).join('')}
+                            `).join('')}
                         </div>
                     </div>
 
@@ -335,7 +335,7 @@ app.get('/admin', async (req, res) => {
                 </div>
             </div>
 
-            \${user.role === 'admin' ? \`
+            ${user.role === 'admin' ? `
             <div class="container-fluid px-4 d-none" id="page-users">
                 <div class="row">
                     <div class="col-md-8 border-end pe-4">
@@ -359,15 +359,15 @@ app.get('/admin', async (req, res) => {
                             <table class="table table-hover table-bordered mb-0 bg-white">
                                 <thead class="table-light text-center"><tr><th>שם משתמש</th><th>הרשאה</th><th>פעולות מהירות</th></tr></thead>
                                 <tbody>
-                                    \${allUsers.map(u => \`
+                                    ${allUsers.map(u => `
                                         <tr class="align-middle text-center">
-                                            <td class="fw-bold">\${u.username}</td>
-                                            <td>\${u.role === 'admin' ? '👑 מנהל' : (u.isProfessional ? '⭐ צוות מקצועי' : '🎧 נציג רגיל')}</td>
+                                            <td class="fw-bold">${u.username}</td>
+                                            <td>${u.role === 'admin' ? '👑 מנהל' : (u.isProfessional ? '⭐ צוות מקצועי' : '🎧 נציג רגיל')}</td>
                                             <td>
-                                                \${u.role !== 'admin' ? \`<button class="btn btn-sm \${u.isProfessional ? 'btn-danger' : 'btn-primary'}" onclick="togglePro('\${u.username}', \${!u.isProfessional})">\${u.isProfessional ? 'הסר מצוות מקצועי' : 'הגדר כצוות מקצועי'}</button>\` : '<span class="text-muted small">מנהל ראשי</span>'}
+                                                ${u.role !== 'admin' ? `<button class="btn btn-sm ${u.isProfessional ? 'btn-danger' : 'btn-primary'}" onclick="togglePro('${u.username}', ${!u.isProfessional})">${u.isProfessional ? 'הסר מצוות מקצועי' : 'הגדר כצוות מקצועי'}</button>` : '<span class="text-muted small">מנהל ראשי</span>'}
                                             </td>
                                         </tr>
-                                    \`).join('')}
+                                    `).join('')}
                                 </tbody>
                             </table>
                         </div>
@@ -379,10 +379,10 @@ app.get('/admin', async (req, res) => {
                     </div>
                 </div>
             </div>
-            \` : ''}
+            ` : ''}
 
             <script>
-                const currentUser = { username: '\${user.username}', role: '\${user.role}' };
+                const currentUser = { username: '${user.username}', role: '${user.role}' };
                 const socket = io();
                 let activeChatId = null;
 
@@ -496,11 +496,11 @@ app.get('/admin', async (req, res) => {
             </script>
         </body>
         </html>
-    \`);
+    `);
 });
 
 app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/dashboard'); });
 
 // --- הפעלת שרת ---
 const PORT = process.env.PORT || 8000;
-server.listen(PORT, () => console.log(\`🚀 TPG System (CRM Only) ready on port \${PORT}\`));
+server.listen(PORT, () => console.log(`🚀 TPG System (CRM Only) ready on port ${PORT}`));
